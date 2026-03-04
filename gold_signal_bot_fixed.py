@@ -25,10 +25,6 @@ import pandas as pd
 import numpy as np
 import requests
 import ta
-import matplotlib
-matplotlib.use("Agg")   # Must be before pyplot import — Railway has no display
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import tempfile, os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -42,8 +38,8 @@ import pytz
 TELEGRAM_TOKEN     = "8369749647:AAGxrU79EQojd-lAEw5b73TbcTMZUwR-SHQ"
 CHAT_ID            = "6533190483"
 TWELVE_DATA_KEY    = "b7fad4cbdcf9493ab7944a06ae002e0d"  # Twelve Data key 1
-TWELVE_DATA_KEY_2  = "145ad17fa12b4251b26711e70f73dfaf"  # Twelve Data key 2 (register free)
-ALPHA_VANTAGE_KEY  = "65X604SALOA865O0"                  # Alpha Vantage fallback
+TWELVE_DATA_KEY_2  = "145ad17fa12b4251b26711e70f73dfaf"                       # Twelve Data key 2 (register free)
+ALPHA_VANTAGE_KEY  = "65X604SALOA865O0"                         # Alpha Vantage fallback
 
 # Key rotation state
 _td_key_index = 0
@@ -200,6 +196,12 @@ BINARY_PAIRS = {
 # Quotex        = OTC pairs ONLY (all same assets)
 POCKET_OPTION_SYMBOLS = {}
 QUOTEX_SYMBOLS        = {}
+
+# Top 10 pairs for auto/manual queue (reduces API calls)
+TOP_BINARY_PAIRS = [
+    "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD",
+    "EUR/GBP", "GBP/JPY", "EUR/JPY", "USD/CHF", "NZD/USD",
+]
 
 for key, val in BINARY_PAIRS.items():
     # Regular pair — Pocket Option weekdays
@@ -1281,13 +1283,24 @@ def score_signal(signal: str, df, ob, structure, fvg, sweep, patterns, sr,
     elif bb_signal["signal"] == "SELL":
         sell_score += 1; reasons_sell.append(f"🎯 BB: {bb_signal['description']} (1pt)")
 
-    # Candle patterns
+    # Candle patterns — strong patterns get 2pts
     buy_patterns  = [p for p in patterns if p["direction"] == "BUY"]
     sell_patterns = [p for p in patterns if p["direction"] == "SELL"]
+    strong_patterns = {"Engulfing", "Pin Bar", "Hammer", "Shooting Star", "Morning Star", "Evening Star"}
     if buy_patterns:
-        buy_score += 1; reasons_buy.append(f"🕯 PA: {buy_patterns[0]['name']} (1pt)")
+        pts = 2 if buy_patterns[0]["name"] in strong_patterns else 1
+        buy_score += pts; reasons_buy.append(f"🕯 PA: {buy_patterns[0]['name']} ({pts}pts)")
     if sell_patterns:
-        sell_score += 1; reasons_sell.append(f"🕯 PA: {sell_patterns[0]['name']} (1pt)")
+        pts = 2 if sell_patterns[0]["name"] in strong_patterns else 1
+        sell_score += pts; reasons_sell.append(f"🕯 PA: {sell_patterns[0]['name']} ({pts}pts)")
+
+    # ── OB + FVG CONFLUENCE BONUS ─────────────────────────────
+    # When Order Block and FVG are both active — very strong
+    if ob["price_in_ob"] and fvg["price_in_fvg"]:
+        if ob["ob_type"] == "BULLISH" and fvg["fvg_type"] == "BULLISH":
+            buy_score += 2; reasons_buy.append("🔥 OB + FVG Confluence (+2pts)")
+        elif ob["ob_type"] == "BEARISH" and fvg["fvg_type"] == "BEARISH":
+            sell_score += 2; reasons_sell.append("🔥 OB + FVG Confluence (+2pts)")
 
     # ── MTF ALIGNMENT BONUS ───────────────────────────────────
     if mtf_align["bonus"] > 0:
@@ -1311,20 +1324,26 @@ def score_signal(signal: str, df, ob, structure, fvg, sweep, patterns, sr,
 
 
 def get_signal_grade(score: int, regime: dict, vol: dict, mtf_align: dict) -> str:
-    """Return A+/A/B/C grade based on score + filters."""
+    """Stricter grading — only strong setups get A/A+."""
     adx       = regime["adx"]
     vol_ratio = vol["ratio"]
     mtf_count = mtf_align["count"]
     mtf_total = mtf_align["total"]
 
-    if score >= 14 and adx >= 25 and vol_ratio >= 1.4 and mtf_count == mtf_total:
-        return "🔥 A+ Premium Setup"
-    elif score >= 10 and adx >= 20 and vol_ratio >= 1.2:
+    # A+: All filters strong, all TFs agree, high volume
+    if score >= 14 and adx >= 30 and vol_ratio >= 1.2 and mtf_count == mtf_total:
+        return "🔥 A+ — Premium Setup"
+    # A: Good ADX, 2 of 3 TFs, decent volume
+    elif score >= 10 and adx >= 25 and vol_ratio >= 0.8:
         return "💪 A — Strong Setup"
-    elif score >= 7 and adx >= 15:
+    # B: Minimum viable signal
+    elif score >= 7 and adx >= 20 and vol_ratio >= 0.5:
         return "✅ B — Good Setup"
+    # C: Weak — send but warn
+    elif score >= 5 and adx >= 18:
+        return "⚠️ C — Weak Setup"
     else:
-        return "⚠️ C — Caution"
+        return "❌ Blocked"
 
 
 def generate_signal(df: pd.DataFrame, mtf: dict) -> dict:
@@ -1353,13 +1372,12 @@ def generate_signal(df: pd.DataFrame, mtf: dict) -> dict:
                 "price": price, "rsi": rsi, "prob": None, "analysis": {},
                 "regime": regime, "volume": vol, "mtf_align": mtf_align, "grade": "❌ Blocked — Ranging"}
 
-    # Volume filter — only hard-block if truly dead (< 0.1x)
-    # Crypto Binance volumes are often fractional — don't over-filter
-    if vol["ratio"] < 0.1:
-        logger.info(f"⏸ Signal blocked — dead volume ({vol['ratio']}x avg)")
-        return {"signal": "HOLD", "conf": 0, "reasons": [f"Dead volume ({vol['ratio']}x avg) — no activity"],
+    # Volume filter — block low volume signals
+    if vol["ratio"] < 0.3:
+        logger.info(f"⏸ Signal blocked — low volume ({vol['ratio']}x avg)")
+        return {"signal": "HOLD", "conf": 0, "reasons": [f"Low volume ({vol['ratio']}x avg) — waiting for activity"],
                 "price": price, "rsi": rsi, "prob": None, "analysis": {},
-                "regime": regime, "volume": vol, "mtf_align": mtf_align, "grade": "❌ Blocked — Dead Volume"}
+                "regime": regime, "volume": vol, "mtf_align": mtf_align, "grade": "❌ Blocked — Low Volume"}
 
     # ── Detect all signals ─────────────────────────────────────
     ob        = detect_order_blocks(df)
@@ -1554,253 +1572,105 @@ def calculate_probability(df, signal, analysis):
 #   SIGNAL CHART GENERATOR
 # ============================================================
 
-def generate_signal_chart(df: pd.DataFrame, signal: str, display: str,
-                           entry: float, sl: float, tp: float) -> str:
-    """
-    Generate a candlestick chart with entry/SL/TP marked.
-    Returns file path to the saved PNG image.
-    """
-    try:
-        # Use last 60 candles
-        plot_df = df.tail(60).copy().reset_index(drop=True)
-
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8),
-                                        gridspec_kw={"height_ratios": [3, 1]},
-                                        facecolor="#0d1117")
-        ax1.set_facecolor("#0d1117")
-        ax2.set_facecolor("#0d1117")
-
-        # ── Draw candlesticks ─────────────────────────────────
-        for i, row in plot_df.iterrows():
-            color  = "#26a69a" if row["close"] >= row["open"] else "#ef5350"
-            # Body
-            body_bottom = min(row["open"], row["close"])
-            body_height = abs(row["close"] - row["open"])
-            ax1.bar(i, body_height, bottom=body_bottom, color=color, width=0.7, linewidth=0)
-            # Wick
-            ax1.plot([i, i], [row["low"], row["high"]], color=color, linewidth=0.8)
-
-        x_end = len(plot_df) - 1
-
-        # ── Entry / SL / TP lines ─────────────────────────────
-        sig_color = "#26a69a" if signal == "BUY" else "#ef5350"
-        ax1.axhline(entry, color="#f0c040", linewidth=1.5, linestyle="--", alpha=0.9)
-        ax1.axhline(sl,    color="#ef5350", linewidth=1.2, linestyle=":",  alpha=0.85)
-        ax1.axhline(tp,    color="#26a69a", linewidth=1.2, linestyle=":",  alpha=0.85)
-
-        # Fill zone between entry and TP
-        ax1.axhspan(min(entry, tp), max(entry, tp), alpha=0.07, color="#26a69a")
-        # Fill zone between entry and SL
-        ax1.axhspan(min(entry, sl), max(entry, sl), alpha=0.07, color="#ef5350")
-
-        # Labels on right side
-        price_range = plot_df["high"].max() - plot_df["low"].min()
-        offset      = price_range * 0.005
-        ax1.text(x_end + 0.5, entry + offset, f"  Entry {entry:.4f}", color="#f0c040",
-                 fontsize=8, va="bottom", fontweight="bold")
-        ax1.text(x_end + 0.5, sl + offset,    f"  SL {sl:.4f}",      color="#ef5350",
-                 fontsize=8, va="bottom")
-        ax1.text(x_end + 0.5, tp + offset,    f"  TP {tp:.4f}",      color="#26a69a",
-                 fontsize=8, va="bottom")
-
-        # Signal arrow
-        arrow_y   = plot_df["low"].min()  - price_range * 0.02
-        arrow_dir = "▲ BUY" if signal == "BUY" else "▼ SELL"
-        ax1.annotate(arrow_dir, xy=(x_end, entry),
-                     xytext=(x_end - 8, arrow_y),
-                     color=sig_color, fontsize=11, fontweight="bold",
-                     arrowprops=dict(arrowstyle="->", color=sig_color, lw=1.5))
-
-        # EMA lines
-        if "ema_fast" in plot_df.columns:
-            ax1.plot(plot_df.index, plot_df["ema_fast"], color="#7b61ff",
-                     linewidth=0.8, alpha=0.7, label="EMA8")
-        if "ema_slow" in plot_df.columns:
-            ax1.plot(plot_df.index, plot_df["ema_slow"], color="#ff9800",
-                     linewidth=0.8, alpha=0.7, label="EMA21")
-
-        # ── RSI panel ─────────────────────────────────────────
-        if "rsi" in plot_df.columns:
-            ax2.plot(plot_df.index, plot_df["rsi"], color="#7b61ff", linewidth=1.2)
-            ax2.axhline(70, color="#ef5350", linewidth=0.6, linestyle="--", alpha=0.6)
-            ax2.axhline(30, color="#26a69a", linewidth=0.6, linestyle="--", alpha=0.6)
-            ax2.axhspan(70, 100, alpha=0.05, color="#ef5350")
-            ax2.axhspan(0,  30,  alpha=0.05, color="#26a69a")
-            ax2.set_ylim(0, 100)
-            ax2.set_ylabel("RSI", color="#888", fontsize=8)
-            ax2.tick_params(colors="#888", labelsize=7)
-            ax2.set_facecolor("#0d1117")
-            for spine in ax2.spines.values():
-                spine.set_edgecolor("#333")
-
-        # ── Styling ───────────────────────────────────────────
-        emoji = "🟢" if signal == "BUY" else "🔴"
-        ax1.set_title(f"{emoji} {display} — {signal} SIGNAL",
-                      color="white", fontsize=13, fontweight="bold", pad=10)
-        ax1.set_ylabel("Price", color="#888", fontsize=9)
-        ax1.tick_params(colors="#888", labelsize=7)
-        ax1.set_xlim(-1, x_end + 6)
-        for spine in ax1.spines.values():
-            spine.set_edgecolor("#333")
-
-        # Legend
-        legend_patches = [
-            mpatches.Patch(color="#f0c040", label=f"Entry {entry:.4f}"),
-            mpatches.Patch(color="#ef5350", label=f"SL {sl:.4f}"),
-            mpatches.Patch(color="#26a69a", label=f"TP {tp:.4f}"),
-        ]
-        ax1.legend(handles=legend_patches, loc="upper left",
-                   facecolor="#1a1f2e", edgecolor="#333",
-                   labelcolor="white", fontsize=8)
-
-        plt.tight_layout(pad=1.5)
-
-        # Save to temp file
-        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False, prefix="signal_chart_")
-        plt.savefig(tmp.name, dpi=130, bbox_inches="tight",
-                    facecolor="#0d1117", edgecolor="none")
-        plt.close(fig)
-        return tmp.name
-
-    except Exception as e:
-        logger.error(f"Chart generation error: {e}")
-        return None
-
-
-# ============================================================
-#   FORMAT SIGNAL MESSAGE
-# ============================================================
-
 def format_signal_message(result, symbol, display):
+    """Clean, compact signal message."""
     signal   = result["signal"]
     price    = result["price"]
     conf     = result["conf"]
     prob     = result["prob"]
     reasons  = result["reasons"]
     analysis = result["analysis"]
-    time_now = to_user_datetime()
-    mtf      = analysis["mtf"]
+    grade    = result.get("grade", "")
+    regime   = result.get("regime", {})
+    vol      = result.get("volume", {})
+    mtf_align= result.get("mtf_align", {})
 
     sl_usd = SYMBOLS[symbol]["sl"]
     tp_usd = sl_usd * RISK_REWARD
 
     if signal == "BUY":
         emoji    = "🟢"
-        sl_price = round(price - sl_usd, 2)
-        tp_price = round(price + tp_usd, 2)
+        sl_price = round(price - sl_usd, 5)
+        tp_price = round(price + tp_usd, 5)
+        action   = "📥 PLACE A BUY ORDER"
     else:
         emoji    = "🔴"
-        sl_price = round(price + sl_usd, 2)
-        tp_price = round(price - tp_usd, 2)
+        sl_price = round(price + sl_usd, 5)
+        tp_price = round(price - tp_usd, 5)
+        action   = "📤 PLACE A SELL ORDER"
 
-    score        = prob["score"]
-    prob_label   = prob["label"]
-    prob_factors = "\n   • ".join(prob["factors"][:8])
-    filled       = int(score / 10)
-    prob_bar     = "█" * filled + "░" * (10 - filled)
-    reasons_text = "\n   • ".join(reasons[:8])
+    # Pip distances
+    pip_sl = round(abs(price - sl_price), 5)
+    pip_tp = round(abs(price - tp_price), 5)
+    rr     = round(tp_usd / sl_usd, 1) if sl_usd > 0 else 2.0
 
-    # Quality filter info from new engine
-    regime    = result.get("regime",   {})
-    vol       = result.get("volume",   {})
-    mtf_align = result.get("mtf_align",{})
-    grade     = result.get("grade",    "")
-    adx_val   = regime.get("adx",      0)
-    vol_ratio = vol.get("ratio",        1.0)
+    adx_val   = regime.get("adx", 0)
+    vol_ratio = vol.get("ratio", 1.0)
     mtf_label = mtf_align.get("label", "")
-    regime_lbl= regime.get("label",    "")
+    score     = prob["score"] if prob else 0
 
-    sessions    = get_active_sessions()
-    session_txt = " + ".join(sessions) if sessions else "Low activity"
-    is_best, _  = is_best_trading_time()
-    peak_tag    = " 🔥" if is_best else ""
+    # Session
+    try:
+        sessions    = get_active_sessions()
+        session_txt = " + ".join(sessions) if sessions else "Off-hours"
+        is_best, _  = is_best_trading_time()
+        peak_tag    = " 🔥" if is_best else ""
+    except Exception:
+        session_txt = ""; peak_tag = ""
 
-    # SMC tags
-    ob        = analysis["ob"]
-    structure = analysis["structure"]
-    fvg       = analysis["fvg"]
-    sweep     = analysis["sweep"]
+    # MTF summary — compact
+    mtf = analysis.get("mtf", {})
+    mtf_lines = ""
+    for tf_key, tf_data in mtf.get("timeframes", {}).items():
+        tf_e = "🟢" if tf_data["bias"] == "BUY" else "🔴" if tf_data["bias"] == "SELL" else "⚪"
+        mtf_lines += f"   {tf_e} {tf_data['tf']}: {tf_data['bias']} (RSI {tf_data['rsi']})\n"
+
+    # SMC + PA compact
+    ob        = analysis.get("ob", {})
+    structure = analysis.get("structure", {})
+    fvg       = analysis.get("fvg", {})
+    sweep     = analysis.get("sweep", {})
     smc_tags  = []
-    if ob["price_in_ob"]:              smc_tags.append("OB")
-    if structure["bos"]:               smc_tags.append("BOS")
-    if structure["choch"]:             smc_tags.append("CHoCH")
-    if fvg["price_in_fvg"]:           smc_tags.append("FVG")
-    if sweep["sweep"]:                 smc_tags.append("Liq.Sweep")
-    smc_line = " | ".join(smc_tags) if smc_tags else "—"
+    if ob.get("price_in_ob"):     smc_tags.append("OB")
+    if structure.get("bos"):      smc_tags.append("BOS")
+    if fvg.get("price_in_fvg"):   smc_tags.append("FVG")
+    if sweep.get("sweep"):        smc_tags.append("Liq.Sweep")
+    smc_line  = " | ".join(smc_tags) if smc_tags else "—"
 
-    # New analysis tags
-    divergence  = analysis.get("divergence", {})
-    fib         = analysis.get("fib", {})
-    bb_sig      = analysis.get("bb", {})
-    extra_tags  = []
-    if divergence.get("type"):         extra_tags.append(f"RSI Div {divergence['type']}")
-    if fib.get("near_fib"):            extra_tags.append(f"Fib {fib.get('fib_level','')}")
-    if bb_sig.get("signal"):           extra_tags.append("BB Signal")
-    if bb_sig.get("squeeze"):          extra_tags.append("BB Squeeze 🔔")
-    extra_line = " | ".join(extra_tags) if extra_tags else "—"
+    pa_list  = [p["name"] for p in analysis.get("patterns", []) if p["direction"] == signal]
+    pa_line  = ", ".join(pa_list[:2]) if pa_list else "—"
 
-    pa_list = [p["name"] for p in analysis["patterns"] if p["direction"] == signal]
-    pa_line = ", ".join(pa_list[:2]) if pa_list else "—"
+    # Top 3 reasons only
+    top_reasons = "\n   • ".join(reasons[:3]) if reasons else "—"
 
-    # MTF summary
-    tf_lines = ""
-    for tf_key, tf_data in mtf["timeframes"].items():
-        tf_emoji = "🟢" if tf_data["bias"] == "BUY" else "🔴" if tf_data["bias"] == "SELL" else "⚪"
-        tf_lines += f"\n   {tf_emoji} {tf_data['tf']}: {tf_data['bias']} (RSI {tf_data['rsi']})"
+    # Signal strength bar
+    filled   = int(score / 10)
+    prob_bar = "█" * filled + "░" * (10 - filled)
 
-    action_line = "📥 PLACE A BUY ORDER" if signal == "BUY" else "📤 PLACE A SELL ORDER"
-
-    msg = f"""
-{emoji}{emoji} *{display} — {signal} NOW* {emoji}{emoji}
-
-{grade}
-
-{action_line}
-
-━━━━━━━━━━━━━━━━━━━━
-💰 *Entry:*        `{price:.2f}`
-🛑 *Stop Loss:*    `{sl_price:.2f}`  ← set this!
-🎯 *Take Profit:*  `{tp_price:.2f}`  ← set this!
-━━━━━━━━━━━━━━━━━━━━
-
-📊 *Signal Score:* {prob_bar} *{score}%*
-{prob_label}
-📌 *Weighted Score:* `{conf} pts`
-⏱ `30M` | 🌍 {session_txt}{peak_tag}
-
-🔬 *Quality Filters:*
-   {regime_lbl} (ADX `{adx_val}`)
-   📊 Volume: `{vol_ratio}x` avg
-   🕐 MTF: {mtf_label}
-
-📐 *Multi-Timeframe:*{tf_lines}
-
-🏦 *SMC:* `{smc_line}`
-🕯 *Price Action:* `{pa_line}`
-📐 *Extra:* `{extra_line}`
-
-📋 *Why {signal}?*
-   • {reasons_text}
-
-🔬 *Strength Factors:*
-   • {prob_factors}
-
-📱 *Steps on MT5 Mobile:*
-   1️⃣ Open MT5 → Find {display}
-   2️⃣ Tap *Trade* → *New Order*
-   3️⃣ Direction: *{signal}*
-   4️⃣ Stop Loss: *{sl_price}*
-   5️⃣ Take Profit: *{tp_price}*
-   6️⃣ Choose lot size → *Confirm* ✅
-
-🕐 `{time_now}`
-⚠️ _Not financial advice. Always use SL._
-"""
+    nl = "\n"
+    msg = (
+        f"{emoji}{emoji} *{display} — {signal} NOW* {emoji}{emoji}\n"
+        f"{grade}\n\n"
+        f"{action}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 *Entry:*       `{price}`\n"
+        f"🛑 *Stop Loss:*   `{sl_price}` ({pip_sl})\n"
+        f"🎯 *Take Profit:* `{tp_price}` ({pip_tp})\n"
+        f"⚖️ *R/R:* `1:{rr}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📊 *Score:* {prob_bar} `{score}%` | *{conf} pts*\n"
+        f"📐 ADX `{adx_val}` | Vol `{vol_ratio}x` | {mtf_label}\n"
+        f"⏱ `30M` | 🌍 {session_txt}{peak_tag}\n\n"
+        f"📐 *MTF Alignment:*\n{mtf_lines}\n"
+        f"🏦 *SMC:* `{smc_line}`\n"
+        f"🕯 *PA:* `{pa_line}`\n\n"
+        f"💡 *Top Reasons:*\n"
+        f"   • {top_reasons}\n\n"
+        f"🕐 `{to_user_datetime()}`\n"
+        f"⚠️ _Always use Stop Loss._"
+    )
     return msg.strip()
 
-# ============================================================
-#   SEND MESSAGE
-# ============================================================
 
 def send_message(message: str):
     try:
@@ -1870,7 +1740,15 @@ def update_signal_outcomes():
     closed = []
     nl = chr(10)
 
+    # Skip ALL trade monitoring when in binary-only mode
+    if active_market == "binary":
+        return
+
     for trade in open_trades:
+        # Skip already expired trades completely
+        if trade.get("expired"):
+            continue
+
         data = get_current_price(trade["symbol"])
         if not data:
             continue
@@ -1930,7 +1808,10 @@ def update_signal_outcomes():
             progress = (entry - current) / total if total > 0 else 0
             profit_distance = entry - current
 
-        # ── Breakeven alert ───────────────────────────────────
+        # ── Breakeven alert (skip if expired) ────────────────
+        if trade.get("expired"):
+            continue
+
         if not trade.get("breakeven_notified") and profit_distance >= sl_usd:
             trade["breakeven_notified"] = True
             send_message(
@@ -2035,66 +1916,106 @@ def calculate_lot_size(balance: float, symbol: str) -> dict:
 # ============================================================
 
 async def send_daily_summary(context):
-    """Send morning market summary at configured time."""
+    """Daily performance report — sent at configured time (default 8PM Lagos = 19:00 UTC)."""
     now = get_utc_now()
-    if now.hour != DAILY_SUMMARY_HOUR or now.minute > 5:
+    # Send at 19:00 UTC (8PM Lagos WAT)
+    if now.hour != 19 or now.minute > 5:
         return
 
-    # Get current prices and trends for all symbols
-    summary_lines = []
+    nl = chr(10)
 
-    for symbol, info in SYMBOLS.items():
-        display = info["display"]
-        data    = get_current_price(symbol)
-        if not data:
-            continue
+    # ── Forex/Crypto Performance ──────────────────────────────
+    total_fx  = performance["total"]
+    wins_fx   = performance["wins"]
+    losses_fx = performance["losses"]
+    pending_fx= performance["pending"]
+    pips_fx   = round(performance.get("total_pips", 0), 2)
+    wr_fx     = round(wins_fx / max(wins_fx + losses_fx, 1) * 100, 1)
 
-        # Quick trend check
-        df = fetch_data(symbol, interval="60m")
-        trend = "—"
-        rsi_val = "—"
-        if df is not None and len(df) > 21:
-            df = calculate_indicators(df)
-            rsi_val = f"{df['rsi'].iloc[-1]:.0f}"
-            if df["ema_fast"].iloc[-1] > df["ema_slow"].iloc[-1]:
-                trend = "📈 Bullish"
-            else:
-                trend = "📉 Bearish"
+    # Best and worst trade
+    best_trade  = "—"
+    worst_trade = "—"
+    if signal_history:
+        closed = [s for s in signal_history if s["outcome"] in ["WIN","LOSS"]]
+        if closed:
+            best  = max(closed, key=lambda x: x.get("pips", 0))
+            worst = min(closed, key=lambda x: x.get("pips", 0))
+            if best["pips"] > 0:
+                best_trade = f"{best['symbol']} {best['signal']} +${abs(round(best['pips'],0))}"
+            if worst["pips"] < 0:
+                worst_trade = f"{worst['symbol']} {worst['signal']} -${abs(round(worst['pips'],0))}"
 
-        arrow = "📈" if data["change"] >= 0 else "📉"
-        summary_lines.append(
-            f"{arrow} *{display}*: `${data['price']:,.2f}` ({data['change']:+.2f}%)\n"
-            f"   Trend: {trend} | RSI: `{rsi_val}`"
+    # ── Binary Performance ────────────────────────────────────
+    total_bin   = binary_performance.get("total", 0)
+    wins_bin    = binary_performance.get("wins", 0)
+    losses_bin  = binary_performance.get("losses", 0)
+    pending_bin = binary_performance.get("pending", 0)
+    streak      = binary_performance.get("streak", 0)
+    wr_bin      = round(wins_bin / max(wins_bin + losses_bin, 1) * 100, 1)
+
+    # Best binary pair
+    best_pair = "—"
+    if binary_asset_stats:
+        sorted_pairs = sorted(
+            binary_asset_stats.items(),
+            key=lambda x: x[1].get("wins", 0),
+            reverse=True
         )
+        if sorted_pairs:
+            pair, stats = sorted_pairs[0]
+            w = stats.get("wins", 0)
+            l = stats.get("losses", 0)
+            if w > 0:
+                best_pair = f"{pair} ({w}W/{l}L)"
 
-    # Sessions today
-    sessions = get_active_sessions()
-    news     = get_upcoming_news()
+    # ── Combined ──────────────────────────────────────────────
+    total_all = wins_fx + losses_fx + wins_bin + losses_bin
+    wins_all  = wins_fx + wins_bin
+    wr_all    = round(wins_all / max(total_all, 1) * 100, 1)
 
-    news_lines = ""
-    if news:
-        news_lines = "\n\n📰 *Events Today:*\n"
-        for n in news[:3]:
-            news_lines += f"   {n['impact']} {n['name']}\n   🕐 {n['time']}\n"
+    # Streak emoji
+    streak_txt = ""
+    if streak >= 3:
+        streak_txt = nl + "🔥 Binary streak: *" + str(streak) + " wins in a row!*"
 
-    forex_open, _ = is_forex_open()
+    # Session info
+    sessions    = get_active_sessions()
+    session_txt = ", ".join(sessions) if sessions else "Off-hours"
 
     msg = (
-        f"🌅 *Good Morning — Daily Market Summary*\n"
-        f"🕐 `{now.strftime('%A, %B %d — %H:%M UTC')}`\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 *Market Overview:*\n"
-        + "\n\n".join(summary_lines) +
-        f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 Forex: {'🟢 Open' if forex_open else '🔴 Closed'}\n"
-        f"🌍 Sessions: {', '.join(sessions) if sessions else 'Pre-market'}"
-        + news_lines +
-        f"\n\n🔥 *Best time today:* 13:00—17:00 UTC\n"
-        f"_(London + New York overlap)_\n\n"
-        f"Good luck today! Use /scan to check signals 📱"
+        "📊 *DAILY PERFORMANCE REPORT*" + nl +
+        "📅 `" + now.strftime("%A, %B %d %Y") + "`" + nl +
+        "━━━━━━━━━━━━━━━━━━━━" + nl + nl +
+
+        "🔷 *Forex / Crypto Signals*" + nl +
+        "Signals: `" + str(total_fx) + "` | "
+        "✅ `" + str(wins_fx) + "W` "
+        "❌ `" + str(losses_fx) + "L` "
+        "⏳ `" + str(pending_fx) + " open`" + nl +
+        "Win Rate: `" + str(wr_fx) + "%`" + nl +
+        ("💰 Pips: `" + str(pips_fx) + "`" + nl if total_fx > 0 else "") +
+        ("🏆 Best: " + best_trade + nl if best_trade != "—" else "") +
+        ("📉 Worst: " + worst_trade + nl if worst_trade != "—" else "") +
+        nl +
+
+        "🔷 *Binary Options*" + nl +
+        "Signals: `" + str(total_bin) + "` | "
+        "✅ `" + str(wins_bin) + "W` "
+        "❌ `" + str(losses_bin) + "L` "
+        "⏳ `" + str(pending_bin) + " open`" + nl +
+        "Win Rate: `" + str(wr_bin) + "%`" + nl +
+        ("🏆 Best pair: " + best_pair + nl if best_pair != "—" else "") +
+        streak_txt + nl + nl +
+
+        "━━━━━━━━━━━━━━━━━━━━" + nl +
+        "🏆 *Overall: " + str(wins_all) + "W / " + str(total_all - wins_all) + "L — " + str(wr_all) + "%*" + nl + nl +
+        "🌍 Active sessions: " + session_txt + nl +
+        "🕐 `" + now.strftime("%H:%M UTC") + "`" + nl + nl +
+        "_Keep following the signals — consistency wins! 💪_"
     )
 
     send_message(msg)
+
 
 # ============================================================
 #   SCAN
@@ -2480,7 +2401,11 @@ def sort_symbols_by_trend(symbols: dict) -> list:
 
 
 async def scan_binary_signals(context, manual: bool = False):
-    """Scan binary symbols — uses active broker + OTC/regular based on day."""
+    """
+    Binary scan — sends ONLY the single best signal per cycle.
+    Scans TOP_BINARY_PAIRS only to save API calls.
+    Manual: triggered by user. Auto: runs every 5 minutes.
+    """
     in_blackout, window = is_news_blackout()
     if in_blackout and not manual:
         logger.info(f"⏸ Binary scan paused — news blackout: {window}")
@@ -2488,183 +2413,173 @@ async def scan_binary_signals(context, manual: bool = False):
 
     expiry_key  = active_binary_expiry
     expiry      = BINARY_EXPIRIES[expiry_key]
-    symbols     = get_active_binary_symbols()
+    all_symbols = get_active_binary_symbols()
     weekend     = is_weekend_otc()
     broker      = BROKERS[active_broker]
     nl          = chr(10)
     send_time   = datetime.now(timezone.utc)
-    signals_found = 0
 
-    if not symbols:
+    if not all_symbols:
         if manual:
-            send_message(
-                "⚡ *Binary Scan*" + nl + nl +
-                "No assets available for " + broker["label"] + nl +
-                ("🌙 Weekend OTC mode" if weekend else "📅 Weekday mode")
-            )
+            send_message("⚡ *Binary Scan*" + nl + "No assets available for " + broker["label"])
         return
 
-    # Notify if auto-switched to OTC due to weekend
-    if active_broker == "po_regular" and weekend:
-        send_message(
-            "🌙 *Weekend Mode — Auto-switched to PO OTC!*" + nl + nl +
-            "Regular market is closed." + nl +
-            "💎 Pocket Option OTC pairs active — higher payouts!" + nl +
-            "Scanning " + str(len(symbols)) + " OTC pairs..."
-        )
-    logger.info(f"⚡ Binary scan: {len(symbols)} symbols | broker={active_broker} | otc={weekend}")
+    # Use only top 10 pairs (fewer API calls, faster scan)
+    otc_suffix = "-OTC" if weekend else ""
+    scan_keys  = []
+    for pair in TOP_BINARY_PAIRS:
+        key = pair + otc_suffix
+        if key in all_symbols:
+            scan_keys.append(key)
+        elif pair in all_symbols:
+            scan_keys.append(pair)
+    if not scan_keys:
+        scan_keys = list(all_symbols.keys())[:10]
 
-    # Sort by trending activity — most active pairs first
-    sorted_keys = sort_symbols_by_trend(symbols)
-    scan_report = []   # track per-symbol result for manual scan
+    logger.info(f"⚡ Binary scan: {len(scan_keys)} pairs | broker={active_broker} | otc={weekend}")
 
-    # Send scan started message for manual scans
     if manual:
         send_message(
             "🔍 *Binary Scan Started*" + nl + nl +
             broker["emoji"] + " Broker: *" + broker["label"] + "*" + nl +
             ("🌙 OTC Mode" if weekend else "📅 Regular Mode") + nl +
             "⚡ Expiry: " + expiry["label"] + nl +
-            "⏱ Checking " + str(len(sorted_keys)) + " pairs..." + nl +
+            "⏱ Checking " + str(len(scan_keys)) + " pairs..." + nl +
             "🕐 " + to_user_time()
         )
 
-    for symbol in sorted_keys:
+    # Scan all pairs — collect signals with confidence
+    candidates = []
+
+    for symbol in scan_keys:
         try:
-            info      = symbols[symbol]
+            info      = all_symbols[symbol]
             base_key  = symbol.replace("-OTC", "")
             base_info = BINARY_PAIRS.get(base_key, {})
-            # td_sym: prefer BINARY_PAIRS (canonical), fallback to symbol info
             td_sym    = base_info.get("td") or info.get("td")
             display   = info.get("display", base_key)
-            logger.info(f"Binary scanning: {display} | base={base_key} | td={td_sym}")
+            candle_tf = expiry["candles"]
 
-            # Fetch candle data — try Twelve Data, fallback to yfinance
+            logger.info(f"Binary scanning: {display}")
+
+            # Fetch data
             df = None
-            candle_tf = expiry["candles"]   # e.g. "1m", "5m", "15m"
-
             if base_key in SYMBOLS:
                 df = fetch_data(base_key, interval=candle_tf)
             elif td_sym:
-                import time; time.sleep(0.5)   # 0.5s gap — stay under TD rate limit
+                time.sleep(0.5)
                 df = fetch_data_twelvedata(td_sym, interval=candle_tf)
 
-            # yfinance fallback — forex pairs available as EURUSD=X etc.
-            if df is None or len(df) < 20:
-                try:
-                    import yfinance as yf
-                    # Convert EUR/USD → EURUSD=X for yfinance
-                    yf_sym = base_key.replace("/", "") + "=X"
-                    # Map candle tf to yfinance interval
-                    yf_tf_map = {"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m"}
-                    yf_tf     = yf_tf_map.get(candle_tf, "5m")
-                    period    = "1d" if yf_tf in ["1m", "5m"] else "5d"
-                    ticker    = yf.Ticker(yf_sym)
-                    raw       = ticker.history(period=period, interval=yf_tf)
-                    if len(raw) >= 20:
-                        df = pd.DataFrame({
-                            "open":   raw["Open"].values,
-                            "high":   raw["High"].values,
-                            "low":    raw["Low"].values,
-                            "close":  raw["Close"].values,
-                            "volume": raw["Volume"].values.astype(float) + 1.0,
-                        })
-                        logger.info(f"✅ yfinance fallback for binary {display}: {len(df)} candles")
-                    else:
-                        logger.warning(f"Binary yfinance: insufficient data for {display}")
-                except Exception as yf_err:
-                    logger.warning(f"Binary yfinance fallback failed {display}: {yf_err}")
+            # Alpha Vantage fallback
+            if (df is None or len(df) < 20) and td_sym:
+                logger.warning(f"TD failed for binary {display} — trying Alpha Vantage")
+                df = fetch_data_alpha_vantage(td_sym, interval=candle_tf)
 
             if df is None or len(df) < 20:
                 logger.warning(f"Binary: no data for {display}")
-                scan_report.append("❓ " + display + " — No data (TD+yf failed)")
                 continue
-
-            logger.info(f"✅ Binary data OK for {display}: {len(df)} candles")
 
             result = analyze_binary_signal(df, expiry_key)
             logger.info(f"Binary {display}: {result['direction']} | {result['confidence']}%")
 
             if result["direction"] in ["CALL", "PUT"]:
-                broker_tag = get_broker_tag(symbol)
-                auto_key   = result.get("auto_expiry", expiry_key)
-                exp_used   = BINARY_EXPIRIES[auto_key]
-                msg        = format_binary_signal(result, symbol, display, auto_key, broker_tag)
-
-                # Send with error detail if it fails
-                resp = send_message(msg)
-                signals_found += 1
-
-                dir_emoji = "🟢" if result["direction"] == "CALL" else "🔴"
-                scan_report.append(
-                    dir_emoji + " " + display + " — " + result["direction"] +
-                    " | " + str(result["confidence"]) + "% conf"
-                )
-
-                # Get entry price
-                if base_key in SYMBOLS:
-                    price_data = get_current_price(base_key)
-                elif td_sym:
-                    price_data = get_current_price_td(td_sym)
-                else:
-                    price_data = None
-                entry_price = price_data["price"] if price_data else 0
-
-                active_binary_trades.append({
-                    "symbol":      symbol,
-                    "base_key":    base_key,
-                    "display":     display,
-                    "direction":   result["direction"],
-                    "entry":       entry_price,
-                    "expiry_s":    exp_used["seconds"],
-                    "payout":      info.get("payout", 80),
-                    "open_time":   send_time.timestamp(),
-                    "valid_until": (send_time + timedelta(minutes=2)).timestamp(),
-                    "valid_str":   (send_time + timedelta(minutes=2)).strftime("%H:%M UTC"),
-                    "notified":    False,
-                    "broker_tag":  broker_tag,
+                candidates.append({
+                    "symbol":   symbol,
+                    "base_key": base_key,
+                    "display":  display,
+                    "result":   result,
+                    "info":     info,
+                    "td_sym":   td_sym,
                 })
-                binary_performance["total"]   += 1
-                binary_performance["pending"] += 1
-
-            else:
-                # No signal — log reason for scan report
-                conf  = result.get("confidence", 0)
-                grade = result.get("grade", "")
-                vol   = result.get("volume", {})
-                reg   = result.get("regime", {})
-                adx   = reg.get("adx", 0)
-                vr    = vol.get("ratio", 1.0)
-                if conf > 0:
-                    scan_report.append("⚪ " + display + " — WAIT " + str(conf) + "% conf")
-                else:
-                    scan_report.append("⚪ " + display + " — WAIT ADX " + str(round(adx,1)) + " Vol " + str(vr) + "x")
 
         except Exception as e:
-            import traceback
-            err = traceback.format_exc()
-            logger.error("Binary scan error %s: %s\n%s", symbol, e, err)
-            display = symbols.get(symbol, {}).get("display", symbol)
-            scan_report.append("⚠️ " + display + " — Error: " + str(e)[:50])
+            logger.error(f"Binary scan error {symbol}: {e}")
+            continue
 
-    # Send scan summary for manual scans
-    if manual:
-        report_lines = chr(10).join(scan_report) if scan_report else "No results"
-        if signals_found > 0:
+    # Pick BEST signal — highest confidence
+    if not candidates:
+        if manual:
             send_message(
-                "✅ *Binary Scan Complete — " + str(signals_found) + " Signal(s)*" + nl + nl +
-                report_lines + nl + nl +
-                "🕐 " + to_user_time()
-            )
-        else:
-            send_message(
-                "📊 *Binary Scan Complete — No Signals*" + nl + nl +
-                report_lines + nl + nl +
+                "📊 *Binary Scan — No Signals*" + nl + nl +
+                "No confident setups found in top 10 pairs." + nl +
                 broker["emoji"] + " " + broker["label"] + " | " +
                 ("🌙 OTC" if weekend else "📅 Regular") + nl +
                 "⚡ Expiry: " + expiry["label"] + nl +
                 "🕐 " + to_user_time()
             )
+        return
+
+    # Sort by confidence — take the best one
+    candidates.sort(key=lambda x: x["result"]["confidence"], reverse=True)
+    best = candidates[0]
+
+    # Only send if confidence >= 65%
+    MIN_BINARY_CONF = 65
+    if best["result"]["confidence"] < MIN_BINARY_CONF:
+        if manual:
+            best_conf = best["result"]["confidence"]
+            send_message(
+                "📊 *Binary Scan — No Signals*" + nl + nl +
+                "Best setup: " + best["display"] + " at " + str(best_conf) + "% conf" + nl +
+                "Minimum required: " + str(MIN_BINARY_CONF) + "%" + nl + nl +
+                "⏳ Waiting for stronger setup..." + nl +
+                "🕐 " + to_user_time()
+            )
+        return
+
+    # Send the single best signal
+    symbol   = best["symbol"]
+    base_key = best["base_key"]
+    display  = best["display"]
+    result   = best["result"]
+    info     = best["info"]
+    td_sym   = best["td_sym"]
+
+    broker_tag = get_broker_tag(symbol)
+    auto_key   = result.get("auto_expiry", expiry_key)
+    exp_used   = BINARY_EXPIRIES[auto_key]
+    msg        = format_binary_signal(result, symbol, display, auto_key, broker_tag)
+
+    send_message(msg)
+
+    # Get entry price
+    if base_key in SYMBOLS:
+        price_data = get_current_price(base_key)
+    elif td_sym:
+        price_data = get_current_price_td(td_sym)
+    else:
+        price_data = None
+    entry_price = price_data["price"] if price_data else 0
+
+    active_binary_trades.append({
+        "symbol":      symbol,
+        "base_key":    base_key,
+        "display":     display,
+        "direction":   result["direction"],
+        "entry":       entry_price,
+        "expiry_s":    exp_used["seconds"],
+        "payout":      info.get("payout", 80),
+        "open_time":   send_time.timestamp(),
+        "valid_until": (send_time + timedelta(minutes=2)).timestamp(),
+        "valid_str":   (send_time + timedelta(minutes=2)).strftime("%H:%M UTC"),
+        "notified":    False,
+        "broker_tag":  broker_tag,
+    })
+    binary_performance["total"]   += 1
+    binary_performance["pending"] += 1
+
+    dir_emoji = "🟢" if result["direction"] == "CALL" else "🔴"
+    logger.info(f"✅ Binary signal sent: {display} {result['direction']} {result['confidence']}%")
+
+
+async def auto_binary_queue_scan(context):
+    """Auto binary queue — runs every 5 minutes, sends best signal if conf >= 65%."""
+    global active_scan
+    # Only run if binary market mode is active or all mode
+    if active_market not in ["binary", "all"]:
+        return
+    logger.info("⚡ Auto binary queue scan running...")
+    await scan_binary_signals(context, manual=False)
 
 
 async def check_binary_results(context):
@@ -2887,19 +2802,10 @@ async def scan_all_symbols(context, manual: bool = False):
                 tp_price = sig["price"] + info["sl"] * RISK_REWARD if sig["signal"] == "BUY" else sig["price"] - info["sl"] * RISK_REWARD
                 msg      = format_signal_message(sig, symbol, display)
 
-                # Generate chart + send with Enter Trade button
-                try:
-                    chart_path = generate_signal_chart(
-                        df, sig["signal"], display, sig["price"],
-                        round(sl_price, 5), round(tp_price, 5)
-                    )
-                except Exception as chart_err:
-                    logger.warning(f"Chart skipped: {chart_err}")
-                    chart_path = None
                 send_signal_with_enter_button(
                     sig["signal"], symbol, display,
                     sig["price"], round(sl_price, 5), round(tp_price, 5),
-                    msg, chart_path
+                    msg
                 )
 
                 signals_found += 1
@@ -2950,7 +2856,7 @@ async def scan_all_symbols(context, manual: bool = False):
 
 def send_signal_with_enter_button(signal: str, symbol: str, display: str,
                                    entry: float, sl: float, tp: float,
-                                   msg: str, chart_path: str = None):
+                                   msg: str):
     """
     Send signal message with an inline "I Entered This Trade" button.
     Stores full trade data in pending_signals dict and uses short numeric ID
@@ -2982,21 +2888,6 @@ def send_signal_with_enter_button(signal: str, symbol: str, display: str,
         ]]
     }
 
-    if chart_path:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-            import json
-            with open(chart_path, "rb") as photo:
-                resp = requests.post(url, data={
-                    "chat_id":      CHAT_ID,
-                    "caption":      msg[:1024],
-                    "parse_mode":   "Markdown",
-                    "reply_markup": json.dumps(keyboard),
-                }, files={"photo": photo}, timeout=20)
-            os.unlink(chart_path)
-            return resp.json().get("result", {}).get("message_id")
-        except Exception as e:
-            logger.error(f"Chart+button send error: {e}")
 
     # Fallback: text only
     url  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -3260,6 +3151,10 @@ async def check_user_trades(context):
     Background job — monitor all user-entered trades.
     Checks P&L, trailing stop, TP/SL hits every minute.
     """
+    # Skip in binary mode
+    if active_market == "binary":
+        return
+
     global user_active_trades
     if not user_active_trades:
         return
@@ -3506,15 +3401,10 @@ async def check_signals(context, show_scanning: bool = False):
                 "🕐 *Signal time:* `" + to_user_time() + "`"
             )
             full_msg   = msg + queue_indicator
-            try:
-                chart_path = generate_signal_chart(df, sig["signal"], display, price, sl_price, tp_price)
-            except Exception as chart_err:
-                logger.warning(f"Chart skipped: {chart_err}")
-                chart_path = None
             send_signal_with_enter_button(
                 sig["signal"], symbol, display,
                 price, sl_price, tp_price,
-                full_msg, chart_path
+                full_msg
             )
 
             save_to_history(sig["signal"], display, symbol, price,
@@ -3539,6 +3429,9 @@ async def check_signals(context, show_scanning: bool = False):
 
 async def check_trade_outcomes(context):
     """Check open trades for TP/SL hits and trailing stops."""
+    # Skip entirely in binary mode — binary results handled by check_binary_results
+    if active_market == "binary":
+        return
     if open_trades:
         update_signal_outcomes()
 
@@ -4792,6 +4685,10 @@ async def check_signal_expiry(context):
     If not entered in time → mark as MISSED and remove from open_trades.
     Also checks if price moved into entry zone (entry_triggered).
     """
+    # Skip in binary mode — binary trades managed separately
+    if active_market == "binary":
+        return
+
     global performance
     now    = datetime.now(timezone.utc).timestamp()
     closed = []
@@ -4860,12 +4757,13 @@ async def post_init(application):
     rebuild_symbol_queue()
     logger.info(f"🔄 Queue initialized: {[SYMBOLS[s]['display'] for s in symbol_queue]}")
 
-    jq.run_repeating(check_signals,        interval=active_scan["seconds"], first=15,  name="signal_scan")
-    jq.run_repeating(check_binary_results, interval=30,  first=20)
-    jq.run_repeating(check_trade_outcomes, interval=60,  first=30)
-    jq.run_repeating(check_user_trades,    interval=60,  first=15)
-    jq.run_repeating(send_daily_summary,   interval=300, first=30)
-    jq.run_repeating(check_signal_expiry,  interval=60,  first=45)
+    jq.run_repeating(check_signals,           interval=active_scan["seconds"], first=15,  name="signal_scan")
+    jq.run_repeating(check_binary_results,    interval=30,  first=20)
+    jq.run_repeating(check_trade_outcomes,    interval=60,  first=30)
+    jq.run_repeating(check_user_trades,       interval=60,  first=15)
+    jq.run_repeating(send_daily_summary,      interval=300, first=30)
+    jq.run_repeating(check_signal_expiry,     interval=60,  first=45)
+    jq.run_repeating(auto_binary_queue_scan,  interval=300, first=60, name="binary_auto_scan")  # Every 5 min
 
     logger.info("✅ All jobs scheduled via post_init")
 
