@@ -1143,7 +1143,7 @@ def check_volume_quality(df: pd.DataFrame) -> dict:
     elif ratio >= 0.1:
         return {"ratio": round(ratio, 2), "bonus": 0, "label": "⚪ Low Volume", "valid": True}
     else:
-        return {"ratio": round(ratio, 2), "bonus": -1, "label": "❌ Dead Volume", "valid": False}
+        return {"ratio": round(ratio, 2), "bonus": 0, "label": "⚪ Very Low Volume", "valid": True}
 
 
 def check_mtf_alignment(mtf: dict) -> dict:
@@ -1156,7 +1156,7 @@ def check_mtf_alignment(mtf: dict) -> dict:
     overall = mtf.get("overall", "HOLD")
 
     if overall == "HOLD" or total == 0:
-        return {"count": 0, "total": total, "grade": "❌", "bonus": 0, "label": "No MTF alignment"}
+        return {"count": 0, "total": total, "grade": "⚠️", "bonus": 1, "label": "Single TF signal"}
 
     agree = sum(1 for tf in tfs.values() if tf.get("bias") == overall)
 
@@ -1167,7 +1167,7 @@ def check_mtf_alignment(mtf: dict) -> dict:
     elif agree >= total * 0.33:
         return {"count": agree, "total": total, "grade": "⚠️", "bonus": 1, "label": f"{agree}/{total} TF aligned"}
     else:
-        return {"count": agree, "total": total, "grade": "❌", "bonus": 0, "label": f"Only {agree}/{total} TF aligned"}
+        return {"count": agree, "total": total, "grade": "⚠️", "bonus": 1, "label": f"Partial TF: {agree}/{total}"}
 
 
 def score_signal(signal: str, df, ob, structure, fvg, sweep, patterns, sr,
@@ -1339,12 +1339,9 @@ def generate_signal(df: pd.DataFrame, mtf: dict) -> dict:
     vol       = check_volume_quality(df)
     mtf_align = check_mtf_alignment(mtf)
 
-    # Block ranging market entirely
+    # Ranging market — don't block, just require higher score (handled by min_score)
     if regime["regime"] == "ranging":
-        logger.info(f"⏸ Signal blocked — ranging market (ADX {regime['adx']})")
-        return {"signal": "HOLD", "conf": 0, "reasons": [f"Ranging market (ADX {regime['adx']}) — waiting for trend"],
-                "price": price, "rsi": rsi, "prob": None, "analysis": {},
-                "regime": regime, "volume": vol, "mtf_align": mtf_align, "grade": "❌ Blocked — Ranging"}
+        logger.info(f"⚠️ Ranging market (ADX {regime['adx']}) — higher score required")
 
     # Volume filter — only block truly dead volume
     if vol["ratio"] < 0.1:
@@ -2172,20 +2169,25 @@ def analyze_binary_signal(df: pd.DataFrame, expiry_key: str) -> dict:
         result["reasons"].append(f"At key resistance {sr['resistance']:.2f}")
 
     # ── Decision ──────────────────────────────────────────────
+    # Max possible pts across all indicators ~= 141
+    MAX_PTS = 141
     total = call_pts + put_pts
     if total == 0:
         return result
 
     if call_pts > put_pts:
-        confidence = min(int((call_pts / total) * 100), 100)
-        if confidence >= 52:
-            result["direction"]  = "CALL"
-            result["confidence"] = confidence
+        # Confidence = how many points scored out of max, boosted by dominance
+        dominance  = call_pts / total          # 0.5 to 1.0
+        raw_score  = (call_pts / MAX_PTS) * 100
+        confidence = min(int(raw_score * (dominance + 0.5)), 100)
+        result["direction"]  = "CALL"
+        result["confidence"] = max(confidence, 50)  # at least 50 if winning side
     elif put_pts > call_pts:
-        confidence = min(int((put_pts / total) * 100), 100)
-        if confidence >= 52:
-            result["direction"]  = "PUT"
-            result["confidence"] = confidence
+        dominance  = put_pts / total
+        raw_score  = (put_pts / MAX_PTS) * 100
+        confidence = min(int(raw_score * (dominance + 0.5)), 100)
+        result["direction"]  = "PUT"
+        result["confidence"] = max(confidence, 50)
 
     # Auto-select expiry + quality info (no blocking — let scan_binary decide)
     vol    = check_volume_quality(df)
@@ -2479,7 +2481,7 @@ async def scan_binary_signals(context, manual: bool = False):
     best = candidates[0]
 
     # Only send if confidence >= 65%
-    MIN_BINARY_CONF = 55
+    MIN_BINARY_CONF = 50
     if best["result"]["confidence"] < MIN_BINARY_CONF:
         if manual:
             best_conf = best["result"]["confidence"]
@@ -3262,6 +3264,139 @@ async def check_user_trades(context):
 
     # Remove closed trades
     user_active_trades = [t for t in user_active_trades if t["id"] not in to_close]
+
+
+# Track last crypto queue signal time — prevent spam
+_last_crypto_queue_signal = 0
+CRYPTO_QUEUE_COOLDOWN = 300  # 5 min cooldown between auto queue signals
+
+async def scan_crypto_queue(context, manual: bool = False):
+    """
+    Crypto/Forex queue scan — scans ALL symbols, sends ONLY the best signal.
+    Manual: user triggers via /queuescan. Auto: runs every 15 minutes.
+    Only active when NOT in binary mode.
+    """
+    global _last_crypto_queue_signal
+
+    if active_market == "binary":
+        if manual:
+            send_message("⚡ Switch to Forex/Crypto mode to use this scan.")
+        return
+
+    in_blackout, window = is_news_blackout()
+    if in_blackout and not manual:
+        return
+
+    now_ts  = datetime.now(timezone.utc).timestamp()
+    symbols = MARKET_MODES[active_market]["symbols"]
+    if not symbols:
+        return
+
+    forex_open, _ = is_forex_open()
+    nl = chr(10)
+
+    if manual:
+        send_message(
+            "🔍 *Queue Scan Started*" + nl + nl +
+            "📊 Scanning " + str(len(symbols)) + " symbols for best setup..." + nl +
+            "🕐 " + to_user_time()
+        )
+
+    candidates = []
+
+    for symbol in symbols:
+        info = SYMBOLS.get(symbol)
+        if not info:
+            continue
+
+        # Skip closed forex
+        if info["type"] == "forex" and not forex_open:
+            continue
+
+        try:
+            mode_cfg = SCAN_MODES[active_scan["tf"]]
+            df = fetch_data(symbol, interval=mode_cfg["interval"])
+            if df is None or len(df) < 50:
+                continue
+
+            df  = calculate_indicators(df)
+            mtf = multi_timeframe_analysis(symbol)
+            sig = generate_signal(df, mtf)
+
+            if sig["signal"] in ["BUY", "SELL"]:
+                candidates.append({
+                    "symbol":  symbol,
+                    "display": info["display"],
+                    "sig":     sig,
+                    "info":    info,
+                    "score":   sig["conf"],
+                })
+                logger.info(f"Queue candidate: {info['display']} {sig['signal']} score={sig['conf']}")
+
+        except Exception as e:
+            logger.error(f"Queue scan error {symbol}: {e}")
+            continue
+
+    if not candidates:
+        if manual:
+            send_message(
+                "📊 *Queue Scan — No Signals*" + nl + nl +
+                "No strong setups found across all symbols." + nl +
+                "Markets may be ranging — try again soon." + nl +
+                "🕐 " + to_user_time()
+            )
+        return
+
+    # Pick best signal — highest score
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    best   = candidates[0]
+    symbol = best["symbol"]
+    display= best["display"]
+    sig    = best["sig"]
+    info   = best["info"]
+    price  = sig["price"]
+
+    sl_price = round(price - info["sl"] if sig["signal"] == "BUY" else price + info["sl"], 5)
+    tp_price = round(price + info["sl"] * RISK_REWARD if sig["signal"] == "BUY" else price - info["sl"] * RISK_REWARD, 5)
+
+    msg = format_signal_message(sig, symbol, display)
+
+    # Add queue tag
+    queue_tag = (
+        chr(10) + "━━━━━━━━━━━━━━━━━━━━" + chr(10) +
+        "🏆 *Best of " + str(len(candidates)) + " setup(s) found*" + chr(10) +
+        ("🔍 Manual scan" if manual else "⚡ Auto queue") + chr(10) +
+        "🕐 " + to_user_time()
+    )
+    full_msg = msg + queue_tag
+
+    send_signal_with_enter_button(
+        sig["signal"], symbol, display,
+        price, sl_price, tp_price,
+        full_msg
+    )
+
+    save_to_history(
+        sig["signal"], display, symbol, price,
+        sig["prob"]["score"] if sig["prob"] else 0,
+        sl_price, tp_price, sig["conf"]
+    )
+
+    _last_crypto_queue_signal = now_ts
+    logger.info(f"✅ Queue signal sent: {display} {sig['signal']} score={sig['conf']}")
+
+
+async def auto_crypto_queue_scan(context):
+    """Auto crypto queue — runs every 15 minutes, best signal only."""
+    global _last_crypto_queue_signal
+    if active_market == "binary":
+        return
+    now_ts = datetime.now(timezone.utc).timestamp()
+    # Respect cooldown
+    if now_ts - _last_crypto_queue_signal < CRYPTO_QUEUE_COOLDOWN:
+        return
+    logger.info("⚡ Auto crypto queue scan running...")
+    await scan_crypto_queue(context, manual=False)
 
 
 async def check_signals(context, show_scanning: bool = False):
@@ -4429,6 +4564,18 @@ async def cmd_menu(update: Update, context):
     )
 
 
+async def cmd_queuescan(update: Update, context):
+    """Manual queue scan — finds and sends the single best setup."""
+    await update.message.reply_text(
+        "🏆 *Queue Scan — Best Setup*\n\n"
+        "Scanning all symbols...\n"
+        "Will send the single strongest signal found.\n\n"
+        "⏳ _Results in 15-20 seconds..._",
+        parse_mode="Markdown"
+    )
+    await scan_crypto_queue(context, manual=True)
+
+
 async def cmd_binary(update: Update, context):
     """Binary options control panel."""
     expiry = BINARY_EXPIRIES[active_binary_expiry]
@@ -4726,9 +4873,10 @@ async def post_init(application):
     jq.run_repeating(check_binary_results,    interval=30,  first=20)
     jq.run_repeating(check_trade_outcomes,    interval=60,  first=30)
     jq.run_repeating(check_user_trades,       interval=60,  first=15)
-    jq.run_repeating(send_daily_summary,      interval=300, first=30)
+    jq.run_repeating(send_daily_summary,      interval=3600, first=60)  # Check hourly
     jq.run_repeating(check_signal_expiry,     interval=60,  first=45)
-    jq.run_repeating(auto_binary_queue_scan,  interval=300, first=60, name="binary_auto_scan")  # Every 5 min
+    jq.run_repeating(auto_binary_queue_scan,  interval=300, first=60,  name="binary_auto_scan")   # Every 5 min
+    jq.run_repeating(auto_crypto_queue_scan,  interval=900, first=120, name="crypto_queue_scan")  # Every 15 min
 
     logger.info("✅ All jobs scheduled via post_init")
 
@@ -4766,7 +4914,8 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_timezone_callback, pattern="^tz_"))
     app.add_handler(CallbackQueryHandler(handle_binary_callback,   pattern="^binary_"))
     app.add_handler(CallbackQueryHandler(handle_callback,          pattern="^(?!binary_|tz_|trade_)"))
-    app.add_handler(CommandHandler("binary",   cmd_binary))
+    app.add_handler(CommandHandler("binary",     cmd_binary))
+    app.add_handler(CommandHandler("queuescan",  cmd_queuescan))
     app.add_handler(CommandHandler("timezone", cmd_timezone))
     app.add_handler(CommandHandler("mytrades", cmd_mytrades))
     # timeframe switching now handled via inline buttons (menu_timeframe callback)
