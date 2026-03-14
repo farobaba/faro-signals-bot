@@ -447,7 +447,7 @@ def fetch_data_binance(binance_symbol: str, interval: str = "30m", limit: int = 
 
 
 def fetch_data(symbol: str, interval: str = "30m", period: str = "5d") -> pd.DataFrame:
-    """Route data fetching to correct API based on symbol config."""
+    """Route data fetching: crypto → Binance, forex/gold → TD → Alpha Vantage."""
     info = SYMBOLS.get(symbol)
     if not info:
         return None
@@ -455,30 +455,8 @@ def fetch_data(symbol: str, interval: str = "30m", period: str = "5d") -> pd.Dat
     if info["source"] == "twelvedata":
         df = fetch_data_twelvedata(info["td_symbol"], interval=interval)
         if df is None or len(df) < 10:
-            # Fallback: try yfinance for gold
-            logger.warning(f"Twelve Data failed for {symbol} — trying yfinance fallback")
-            try:
-                import yfinance as yf
-                yf_map = {"XAU/USD": "GC=F", "EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X"}
-                yf_sym = yf_map.get(symbol)
-                if yf_sym:
-                    tf_map = {"5m": "5m", "15m": "15m", "30m": "30m", "60m": "60m", "1h": "60m", "4h": "1h", "1d": "1d"}
-                    yf_tf  = tf_map.get(interval, "30m")
-                    period = "5d" if interval in ["5m","15m","30m"] else "60d"
-                    ticker = yf.Ticker(yf_sym)
-                    raw    = ticker.history(period=period, interval=yf_tf)
-                    if len(raw) >= 10:
-                        df = pd.DataFrame({
-                            "open":   raw["Open"].values,
-                            "high":   raw["High"].values,
-                            "low":    raw["Low"].values,
-                            "close":  raw["Close"].values,
-                            "volume": raw["Volume"].values.astype(float) + 1.0,
-                        })
-                        logger.info(f"✅ yfinance fallback: {len(df)} candles for {symbol}")
-                        return df
-            except Exception as yf_err:
-                logger.error(f"yfinance fallback failed for {symbol}: {yf_err}")
+            logger.warning(f"TD failed for {symbol} — trying Alpha Vantage")
+            df = fetch_data_alpha_vantage(info["td_symbol"], interval=interval)
         return df
     else:
         return fetch_data_binance(info["binance"], interval=interval)
@@ -1330,17 +1308,13 @@ def get_signal_grade(score: int, regime: dict, vol: dict, mtf_align: dict) -> st
     mtf_count = mtf_align["count"]
     mtf_total = mtf_align["total"]
 
-    # A+: All filters strong, all TFs agree, high volume
-    if score >= 14 and adx >= 30 and vol_ratio >= 1.2 and mtf_count == mtf_total:
+    if score >= 12 and adx >= 25 and vol_ratio >= 1.0 and mtf_count == mtf_total:
         return "🔥 A+ — Premium Setup"
-    # A: Good ADX, 2 of 3 TFs, decent volume
-    elif score >= 10 and adx >= 25 and vol_ratio >= 0.8:
+    elif score >= 8 and adx >= 18 and vol_ratio >= 0.5:
         return "💪 A — Strong Setup"
-    # B: Minimum viable signal
-    elif score >= 7 and adx >= 20 and vol_ratio >= 0.5:
+    elif score >= 5 and adx >= 12:
         return "✅ B — Good Setup"
-    # C: Weak — send but warn
-    elif score >= 5 and adx >= 18:
+    elif score >= 3:
         return "⚠️ C — Weak Setup"
     else:
         return "❌ Blocked"
@@ -1372,12 +1346,12 @@ def generate_signal(df: pd.DataFrame, mtf: dict) -> dict:
                 "price": price, "rsi": rsi, "prob": None, "analysis": {},
                 "regime": regime, "volume": vol, "mtf_align": mtf_align, "grade": "❌ Blocked — Ranging"}
 
-    # Volume filter — block low volume signals
-    if vol["ratio"] < 0.3:
-        logger.info(f"⏸ Signal blocked — low volume ({vol['ratio']}x avg)")
-        return {"signal": "HOLD", "conf": 0, "reasons": [f"Low volume ({vol['ratio']}x avg) — waiting for activity"],
+    # Volume filter — only block truly dead volume
+    if vol["ratio"] < 0.1:
+        logger.info(f"⏸ Signal blocked — dead volume ({vol['ratio']}x avg)")
+        return {"signal": "HOLD", "conf": 0, "reasons": [f"Dead volume ({vol['ratio']}x avg)"],
                 "price": price, "rsi": rsi, "prob": None, "analysis": {},
-                "regime": regime, "volume": vol, "mtf_align": mtf_align, "grade": "❌ Blocked — Low Volume"}
+                "regime": regime, "volume": vol, "mtf_align": mtf_align, "grade": "❌ Blocked — Dead Volume"}
 
     # ── Detect all signals ─────────────────────────────────────
     ob        = detect_order_blocks(df)
@@ -2204,34 +2178,25 @@ def analyze_binary_signal(df: pd.DataFrame, expiry_key: str) -> dict:
 
     if call_pts > put_pts:
         confidence = min(int((call_pts / total) * 100), 100)
-        if confidence >= 55:
+        if confidence >= 52:
             result["direction"]  = "CALL"
             result["confidence"] = confidence
     elif put_pts > call_pts:
         confidence = min(int((put_pts / total) * 100), 100)
-        if confidence >= 55:
+        if confidence >= 52:
             result["direction"]  = "PUT"
             result["confidence"] = confidence
 
-    # Auto-select expiry + quality filters
-    if result["direction"] in ["CALL", "PUT"]:
-        result["auto_expiry"] = auto_select_expiry(df, result["confidence"])
-        # Volume + regime check for binary too
-        vol    = check_volume_quality(df)
-        regime = detect_market_regime(df)
-        result["volume"]  = vol
-        result["regime"]  = regime
-        result["grade"]   = get_signal_grade(
-            int(result["confidence"] / 10), regime, vol,
-            {"count": 1, "total": 1, "label": "Binary MTF"}
-        )
-        # Block low volume binary signals
-        if not vol["valid"]:
-            result["direction"] = "WAIT"
-    else:
-        result["auto_expiry"] = "5m"
-        result["volume"]  = check_volume_quality(df)
-        result["regime"]  = detect_market_regime(df)
+    # Auto-select expiry + quality info (no blocking — let scan_binary decide)
+    vol    = check_volume_quality(df)
+    regime = detect_market_regime(df)
+    result["auto_expiry"] = auto_select_expiry(df, result["confidence"]) if result["direction"] in ["CALL","PUT"] else "5m"
+    result["volume"]  = vol
+    result["regime"]  = regime
+    result["grade"]   = get_signal_grade(
+        int(result["confidence"] / 10), regime, vol,
+        {"count": 1, "total": 1, "label": "Binary"}
+    )
 
     return result
 
@@ -2514,7 +2479,7 @@ async def scan_binary_signals(context, manual: bool = False):
     best = candidates[0]
 
     # Only send if confidence >= 65%
-    MIN_BINARY_CONF = 65
+    MIN_BINARY_CONF = 55
     if best["result"]["confidence"] < MIN_BINARY_CONF:
         if manual:
             best_conf = best["result"]["confidence"]
