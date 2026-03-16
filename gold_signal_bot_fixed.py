@@ -123,7 +123,7 @@ DAILY_SUMMARY_MINUTE = 0
 # Trailing stop trigger — when TP is X% reached, suggest moving SL
 TRAILING_TRIGGER_PCT  = 0.5    # 50% to TP → suggest trailing stop
 BREAKEVEN_TRIGGER_PCT = 1.0    # 100% of SL distance in profit → move to breakeven
-SIGNAL_EXPIRY_CANDLES = 2      # Signal expires after this many candles
+SIGNAL_EXPIRY_CANDLES = 8      # Signal expires after this many candles without movement
 REENTRY_BUFFER_PCT    = 0.003  # 0.3% pullback = re-entry zone
 
 # ============================================================
@@ -157,106 +157,13 @@ MARKET_MODES = {
     "forex":  {"label": "Forex",   "emoji": "💱", "symbols": ["XAU/USD"]},
     "crypto": {"label": "Crypto",  "emoji": "🪙", "symbols": ["BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT","DOGE/USDT","AVAX/USDT","LINK/USDT"]},
     "all":    {"label": "All",     "emoji": "🌍", "symbols": ["XAU/USD","BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT","DOGE/USDT","AVAX/USDT","LINK/USDT"]},
-    "binary": {"label": "Binary",  "emoji": "⚡", "symbols": []},  # Binary uses get_active_binary_symbols() — not this list
 }
 
 # ── Pocket Option Binary Settings ────────────────────────────
 # ── All pairs shared by both brokers ─────────────────────────
 # Pocket Option = regular pairs (weekdays)
 # Quotex        = OTC versions only (always available)
-BINARY_PAIRS = {
-    # Key           display         td_symbol      po_pay  qx_pay
-    "EUR/USD":  {"display": "EURUSD",  "td": "EUR/USD",  "po": 92, "qx": 90},
-    "GBP/USD":  {"display": "GBPUSD",  "td": "GBP/USD",  "po": 88, "qx": 86},
-    "USD/JPY":  {"display": "USDJPY",  "td": "USD/JPY",  "po": 88, "qx": 86},
-    "USD/CAD":  {"display": "USDCAD",  "td": "USD/CAD",  "po": 85, "qx": 83},
-    "AUD/USD":  {"display": "AUDUSD",  "td": "AUD/USD",  "po": 85, "qx": 83},
-    "NZD/USD":  {"display": "NZDUSD",  "td": "NZD/USD",  "po": 85, "qx": 83},
-    "EUR/JPY":  {"display": "EURJPY",  "td": "EUR/JPY",  "po": 85, "qx": 83},
-    "GBP/AUD":  {"display": "GBPAUD",  "td": "GBP/AUD",  "po": 83, "qx": 81},
-    "GBP/NZD":  {"display": "GBPNZD",  "td": "GBP/NZD",  "po": 83, "qx": 81},
-    "EUR/CHF":  {"display": "EURCHF",  "td": "EUR/CHF",  "po": 82, "qx": 80},
-    "EUR/CAD":  {"display": "EURCAD",  "td": "EUR/CAD",  "po": 82, "qx": 80},
-    "EUR/AUD":  {"display": "EURAUD",  "td": "EUR/AUD",  "po": 82, "qx": 80},
-    "NZD/CHF":  {"display": "NZDCHF",  "td": "NZD/CHF",  "po": 80, "qx": 78},
-    "NZD/JPY":  {"display": "NZDJPY",  "td": "NZD/JPY",  "po": 80, "qx": 78},
-    "GBP/CHF":  {"display": "GBPCHF",  "td": "GBP/CHF",  "po": 80, "qx": 78},
-    "CAD/CHF":  {"display": "CADCHF",  "td": "CAD/CHF",  "po": 80, "qx": 78},
-    "CHF/JPY":  {"display": "CHFJPY",  "td": "CHF/JPY",  "po": 80, "qx": 78},
-    "USD/MXN":  {"display": "USDMXN",  "td": "USD/MXN",  "po": 88, "qx": 86},
-    "USD/BDT":  {"display": "USDBDT",  "td": "USD/BDT",  "po": 85, "qx": 83},
-    "USD/COP":  {"display": "USDCOP",  "td": "USD/COP",  "po": 85, "qx": 83},
-    "USD/ARS":  {"display": "USDARS",  "td": "USD/ARS",  "po": 85, "qx": 83},
-    "USD/PKR":  {"display": "USDPKR",  "td": "USD/PKR",  "po": 85, "qx": 83},
-    "BRL/USD":  {"display": "BRLUSD",  "td": "BRL/USD",  "po": 88, "qx": 86},
-}
 
-# ── Build broker-specific symbol lists ────────────────────────
-# Pocket Option = regular pairs + OTC pairs
-# Quotex        = OTC pairs ONLY (all same assets)
-POCKET_OPTION_SYMBOLS = {}
-QUOTEX_SYMBOLS        = {}
-
-# Top 10 pairs for auto/manual queue (reduces API calls)
-TOP_BINARY_PAIRS = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD",
-    "EUR/GBP", "GBP/JPY", "EUR/JPY", "USD/CHF", "NZD/USD",
-]
-
-for key, val in BINARY_PAIRS.items():
-    # Regular pair — Pocket Option weekdays
-    POCKET_OPTION_SYMBOLS[key] = {
-        "display": val["display"],
-        "td":      val.get("td"),
-        "binance": val.get("binance"),
-        "payout":  val["po"],
-        "otc":     False,
-        "broker":  "Pocket Option",
-    }
-    # OTC version — both brokers
-    otc_key = key + "-OTC"
-    otc_display = val["display"] + "-OTC"
-    POCKET_OPTION_SYMBOLS[otc_key] = {
-        "display": otc_display,
-        "td":      val.get("td"),
-        "binance": val.get("binance"),
-        "payout":  min(val["po"] + 5, 98),  # OTC pays MORE — up to 98%
-        "otc":     True,
-        "broker":  "Pocket Option OTC",
-    }
-    QUOTEX_SYMBOLS[otc_key] = {
-        "display": otc_display,
-        "td":      val.get("td"),
-        "binance": val.get("binance"),
-        "payout":  val["qx"],
-        "otc":     True,
-        "broker":  "Quotex",
-    }
-
-# Legacy BINARY_SYMBOLS kept for compatibility
-BINARY_SYMBOLS = POCKET_OPTION_SYMBOLS
-
-# ── Broker config ─────────────────────────────────────────────
-BROKERS = {
-    "po_regular": {"label": "PO Regular", "emoji": "💰", "otc": False,  "broker": "Pocket Option"},
-    "po_otc":     {"label": "PO OTC",     "emoji": "💎", "otc": True,   "broker": "Pocket Option"},
-    "quotex":     {"label": "Quotex OTC", "emoji": "📊", "otc": True,   "broker": "Quotex"},
-}
-active_broker = "po_otc"   # Default to OTC — higher payouts
-
-BINARY_EXPIRIES = {
-    "1m":  {"label": "1 Minute",  "seconds": 60,   "emoji": "⚡", "candles": "1m",  "lookback": 30},
-    "2m":  {"label": "2 Minutes", "seconds": 120,  "emoji": "🔥", "candles": "1m",  "lookback": 40},
-    "5m":  {"label": "5 Minutes", "seconds": 300,  "emoji": "✅", "candles": "5m",  "lookback": 50},
-    "15m": {"label": "15 Minutes","seconds": 900,  "emoji": "📊", "candles": "15m", "lookback": 50},
-}
-
-active_binary_expiry = "5m"    # Default expiry
-binary_results       = []      # Track binary trade results
-binary_performance   = {"total": 0, "wins": 0, "losses": 0, "pending": 0}
-binary_asset_stats   = {}      # Per-asset: {display: {wins, losses, total}}
-binary_streak        = {"current": 0, "type": None, "best_win": 0, "worst_loss": 0}
-active_binary_trades = []      # Pending expiry checks
 
 active_market = "all"   # Currently active market mode
 
@@ -1700,7 +1607,7 @@ def save_to_history(signal, display, symbol, price, prob_score, sl, tp, conf):
         "candles_passed":      0,
         "expired":             False,
         "entry_time":          now_ts,
-        "entry_expiry_time":   now_ts + 900,   # 15 minutes to enter
+        "entry_expiry_time":   now_ts + 1800,  # 30 minutes to enter
         "entry_triggered":     False,          # True once price moves into trade
         "entry_missed_noted":  False,          # True once MISSED notification sent
     })
@@ -1916,39 +1823,6 @@ async def send_daily_summary(context):
             if worst["pips"] < 0:
                 worst_trade = f"{worst['symbol']} {worst['signal']} -${abs(round(worst['pips'],0))}"
 
-    # ── Binary Performance ────────────────────────────────────
-    total_bin   = binary_performance.get("total", 0)
-    wins_bin    = binary_performance.get("wins", 0)
-    losses_bin  = binary_performance.get("losses", 0)
-    pending_bin = binary_performance.get("pending", 0)
-    streak      = binary_performance.get("streak", 0)
-    wr_bin      = round(wins_bin / max(wins_bin + losses_bin, 1) * 100, 1)
-
-    # Best binary pair
-    best_pair = "—"
-    if binary_asset_stats:
-        sorted_pairs = sorted(
-            binary_asset_stats.items(),
-            key=lambda x: x[1].get("wins", 0),
-            reverse=True
-        )
-        if sorted_pairs:
-            pair, stats = sorted_pairs[0]
-            w = stats.get("wins", 0)
-            l = stats.get("losses", 0)
-            if w > 0:
-                best_pair = f"{pair} ({w}W/{l}L)"
-
-    # ── Combined ──────────────────────────────────────────────
-    total_all = wins_fx + losses_fx + wins_bin + losses_bin
-    wins_all  = wins_fx + wins_bin
-    wr_all    = round(wins_all / max(total_all, 1) * 100, 1)
-
-    # Streak emoji
-    streak_txt = ""
-    if streak >= 3:
-        streak_txt = nl + "🔥 Binary streak: *" + str(streak) + " wins in a row!*"
-
     # Session info
     sessions    = get_active_sessions()
     session_txt = ", ".join(sessions) if sessions else "Off-hours"
@@ -1957,9 +1831,8 @@ async def send_daily_summary(context):
         "📊 *DAILY PERFORMANCE REPORT*" + nl +
         "📅 `" + now.strftime("%A, %B %d %Y") + "`" + nl +
         "━━━━━━━━━━━━━━━━━━━━" + nl + nl +
-
-        "🔷 *Forex / Crypto Signals*" + nl +
-        "Signals: `" + str(total_fx) + "` | "
+        "🔷 *Signals Today*" + nl +
+        "Total: `" + str(total_fx) + "` | "
         "✅ `" + str(wins_fx) + "W` "
         "❌ `" + str(losses_fx) + "L` "
         "⏳ `" + str(pending_fx) + " open`" + nl +
@@ -1968,19 +1841,9 @@ async def send_daily_summary(context):
         ("🏆 Best: " + best_trade + nl if best_trade != "—" else "") +
         ("📉 Worst: " + worst_trade + nl if worst_trade != "—" else "") +
         nl +
-
-        "🔷 *Binary Options*" + nl +
-        "Signals: `" + str(total_bin) + "` | "
-        "✅ `" + str(wins_bin) + "W` "
-        "❌ `" + str(losses_bin) + "L` "
-        "⏳ `" + str(pending_bin) + " open`" + nl +
-        "Win Rate: `" + str(wr_bin) + "%`" + nl +
-        ("🏆 Best pair: " + best_pair + nl if best_pair != "—" else "") +
-        streak_txt + nl + nl +
-
         "━━━━━━━━━━━━━━━━━━━━" + nl +
-        "🏆 *Overall: " + str(wins_all) + "W / " + str(total_all - wins_all) + "L — " + str(wr_all) + "%*" + nl + nl +
-        "🌍 Active sessions: " + session_txt + nl +
+        "🏆 *Overall: " + str(wins_fx) + "W / " + str(losses_fx) + "L — " + str(wr_fx) + "%*" + nl + nl +
+        "🌍 Sessions: " + session_txt + nl +
         "🕐 `" + now.strftime("%H:%M UTC") + "`" + nl + nl +
         "_Keep following the signals — consistency wins! 💪_"
     )
@@ -1992,359 +1855,14 @@ async def send_daily_summary(context):
 #   SCAN
 # ============================================================
 
-# ============================================================
-#   BINARY OPTIONS — ANALYSIS ENGINE (Pocket Option)
-# ============================================================
-
-def calculate_stochastic(df: pd.DataFrame, k_period=14, d_period=3) -> pd.DataFrame:
-    """Stochastic Oscillator — key for binary options."""
-    low_min  = df["low"].rolling(window=k_period).min()
-    high_max = df["high"].rolling(window=k_period).max()
-    df["stoch_k"] = 100 * (df["close"] - low_min) / (high_max - low_min + 1e-10)
-    df["stoch_d"] = df["stoch_k"].rolling(window=d_period).mean()
-    return df
-
-
-def calculate_momentum(df: pd.DataFrame, period=10) -> pd.DataFrame:
-    """Price momentum — how fast price is moving."""
-    df["momentum"] = df["close"] - df["close"].shift(period)
-    df["mom_ma"]   = df["momentum"].rolling(5).mean()
-    return df
-
-
-def auto_select_expiry(df: pd.DataFrame, confidence: int) -> str:
-    """
-    Auto-select binary expiry based on ATR volatility + signal confidence.
-    Returns expiry key: '1m', '2m', or '5m'
-    """
-    try:
-        atr    = df["atr"].iloc[-1] if "atr" in df.columns else None
-        price  = df["close"].iloc[-1]
-
-        if atr is None:
-            atr_pct = 0.003
-        else:
-            atr_pct = atr / price  # ATR as % of price
-
-        # High volatility + high confidence → fast expiry
-        if atr_pct > 0.005 and confidence >= 78:
-            return "1m"
-        # Medium volatility or good confidence → 2 min
-        elif atr_pct > 0.003 or confidence >= 65:
-            return "2m"
-        # Low volatility / lower confidence → 5 min
-        else:
-            return "5m"
-    except Exception:
-        return "5m"   # safe default
-
-
-def analyze_binary_signal(df: pd.DataFrame, expiry_key: str) -> dict:
-    """
-    Full binary options analysis.
-    Returns CALL, PUT, or WAIT with confidence score.
-    """
-    result = {
-        "direction": "WAIT",
-        "confidence": 0,
-        "reasons":    [],
-        "expiry":     BINARY_EXPIRIES[expiry_key]["label"],
-        "payout":     0,
-    }
-
-    if df is None or len(df) < 20:
-        return result
-
-    # Calculate all indicators
-    df = calculate_indicators(df)
-    df = calculate_stochastic(df)
-    df = calculate_momentum(df)
-
-    latest   = df.iloc[-1]
-    prev     = df.iloc[-2]
-    call_pts = 0
-    put_pts  = 0
-
-    # ── RSI ───────────────────────────────────────────────────
-    rsi = latest["rsi"]
-    if rsi < 30:
-        call_pts += 20
-        result["reasons"].append(f"RSI {rsi:.0f} — oversold 🔥")
-    elif rsi < 40:
-        call_pts += 10
-        result["reasons"].append(f"RSI {rsi:.0f} — approaching oversold")
-    elif rsi > 70:
-        put_pts += 20
-        result["reasons"].append(f"RSI {rsi:.0f} — overbought 🔥")
-    elif rsi > 60:
-        put_pts += 10
-        result["reasons"].append(f"RSI {rsi:.0f} — approaching overbought")
-
-    # ── Stochastic ────────────────────────────────────────────
-    stoch_k = latest["stoch_k"]
-    stoch_d = latest["stoch_d"]
-    if stoch_k < 20 and stoch_d < 20:
-        call_pts += 20
-        result["reasons"].append(f"Stochastic {stoch_k:.0f} — oversold zone")
-    elif stoch_k > 80 and stoch_d > 80:
-        put_pts += 20
-        result["reasons"].append(f"Stochastic {stoch_k:.0f} — overbought zone")
-
-    # Stochastic crossover
-    if prev["stoch_k"] <= prev["stoch_d"] and latest["stoch_k"] > latest["stoch_d"] and stoch_k < 50:
-        call_pts += 15
-        result["reasons"].append("Stochastic bullish cross ⬆️")
-    elif prev["stoch_k"] >= prev["stoch_d"] and latest["stoch_k"] < latest["stoch_d"] and stoch_k > 50:
-        put_pts += 15
-        result["reasons"].append("Stochastic bearish cross ⬇️")
-
-    # ── Bollinger Bands ───────────────────────────────────────
-    bb_pct = latest["bb_pct"]
-    if bb_pct <= 0.05:
-        call_pts += 15
-        result["reasons"].append("Price at BB lower band — bounce zone")
-    elif bb_pct >= 0.95:
-        put_pts += 15
-        result["reasons"].append("Price at BB upper band — rejection zone")
-
-    # BB squeeze breakout direction
-    bb_width   = latest["bb_width"]
-    avg_width  = df["bb_width"].rolling(20).mean().iloc[-1]
-    if bb_width < avg_width * 0.5:
-        # Squeeze — use momentum to predict direction
-        if latest["momentum"] > 0:
-            call_pts += 10
-            result["reasons"].append("BB Squeeze + bullish momentum 🔔")
-        else:
-            put_pts += 10
-            result["reasons"].append("BB Squeeze + bearish momentum 🔔")
-
-    # ── MACD ──────────────────────────────────────────────────
-    if prev["macd"] <= prev["macd_signal"] and latest["macd"] > latest["macd_signal"]:
-        call_pts += 15
-        result["reasons"].append("MACD bullish crossover")
-    elif prev["macd"] >= prev["macd_signal"] and latest["macd"] < latest["macd_signal"]:
-        put_pts += 15
-        result["reasons"].append("MACD bearish crossover")
-    elif latest["macd_hist"] > 0 and latest["macd_hist"] > prev["macd_hist"]:
-        call_pts += 8
-        result["reasons"].append("MACD histogram growing bullish")
-    elif latest["macd_hist"] < 0 and latest["macd_hist"] < prev["macd_hist"]:
-        put_pts += 8
-        result["reasons"].append("MACD histogram growing bearish")
-
-    # ── EMA trend ─────────────────────────────────────────────
-    if latest["ema_fast"] > latest["ema_slow"]:
-        call_pts += 8
-        result["reasons"].append("EMA trend: Bullish")
-    else:
-        put_pts += 8
-        result["reasons"].append("EMA trend: Bearish")
-
-    # ── Momentum ──────────────────────────────────────────────
-    if latest["momentum"] > 0 and latest["mom_ma"] > 0:
-        call_pts += 8
-        result["reasons"].append("Price momentum: Bullish")
-    elif latest["momentum"] < 0 and latest["mom_ma"] < 0:
-        put_pts += 8
-        result["reasons"].append("Price momentum: Bearish")
-
-    # ── Candle patterns (fast binary patterns) ────────────────
-    patterns = detect_candle_patterns(df)
-    for p in patterns:
-        if p["direction"] == "BUY":
-            call_pts += 10
-            result["reasons"].append("🕯 " + p["name"])
-        elif p["direction"] == "SELL":
-            put_pts += 10
-            result["reasons"].append("🕯 " + p["name"])
-
-    # ── Support & Resistance ──────────────────────────────────
-    sr = detect_support_resistance(df)
-    if sr["near_support"]:
-        call_pts += 10
-        result["reasons"].append(f"At key support {sr['support']:.2f}")
-    if sr["near_resistance"]:
-        put_pts += 10
-        result["reasons"].append(f"At key resistance {sr['resistance']:.2f}")
-
-    # ── Decision ──────────────────────────────────────────────
-    # Max possible pts across all indicators ~= 141
-    MAX_PTS = 141
-    total = call_pts + put_pts
-    if total == 0:
-        return result
-
-    if call_pts > put_pts:
-        # Confidence = how many points scored out of max, boosted by dominance
-        dominance  = call_pts / total          # 0.5 to 1.0
-        raw_score  = (call_pts / MAX_PTS) * 100
-        confidence = min(int(raw_score * (dominance + 0.5)), 100)
-        result["direction"]  = "CALL"
-        result["confidence"] = max(confidence, 50)  # at least 50 if winning side
-    elif put_pts > call_pts:
-        dominance  = put_pts / total
-        raw_score  = (put_pts / MAX_PTS) * 100
-        confidence = min(int(raw_score * (dominance + 0.5)), 100)
-        result["direction"]  = "PUT"
-        result["confidence"] = max(confidence, 50)
-
-    # Auto-select expiry + quality info (no blocking — let scan_binary decide)
-    vol    = check_volume_quality(df)
-    regime = detect_market_regime(df)
-    result["auto_expiry"] = auto_select_expiry(df, result["confidence"]) if result["direction"] in ["CALL","PUT"] else "5m"
-    result["volume"]  = vol
-    result["regime"]  = regime
-    result["grade"]   = get_signal_grade(
-        int(result["confidence"] / 10), regime, vol,
-        {"count": 1, "total": 1, "label": "Binary"}
-    )
-
-    return result
-
-
-def format_binary_signal(result: dict, symbol: str, display: str, expiry_key: str = None, broker_tag: str = "") -> str:
-    """Format binary signal message — auto expiry based on ATR + confidence."""
-    direction  = result["direction"]
-    confidence = result["confidence"]
-    # Use auto-selected expiry from analysis, fallback to passed key or default
-    auto_key   = result.get("auto_expiry", expiry_key or "5m")
-    expiry     = BINARY_EXPIRIES[auto_key]
-    payout     = POCKET_OPTION_SYMBOLS.get(symbol, {}).get("payout", 80)
-    reasons    = result["reasons"]
-
-    # ── Time calculations ─────────────────────────────────────
-    now          = datetime.now(timezone.utc)
-    valid_window = 2   # minutes to place the trade
-    valid_until  = now + timedelta(minutes=valid_window)
-    expiry_at    = now + timedelta(seconds=expiry["seconds"] + valid_window * 60)
-
-    place_time   = to_user_time(now)
-    valid_time   = to_user_time(valid_until)
-    expiry_time  = to_user_time(expiry_at)
-    time_now_str = to_user_time(now)
-
-    emoji      = "🟢" if direction == "CALL" else "🔴"
-    de         = "⬆️" if direction == "CALL" else "⬇️"
-    action     = "CALL (UP ⬆️)" if direction == "CALL" else "PUT (DOWN ⬇️)"
-    filled     = int(confidence / 10)
-    conf_bar   = "█" * filled + "░" * (10 - filled)
-    reasons_txt = chr(10) + "   • ".join(reasons[:6])
-
-    if confidence >= 80:
-        conf_label = "🔥 VERY HIGH — Strong setup"
-    elif confidence >= 70:
-        conf_label = "💪 HIGH — Good setup"
-    elif confidence >= 60:
-        conf_label = "✅ MODERATE — Decent setup"
-    else:
-        conf_label = "⚠️ LOW — Be careful"
-
-    nl = chr(10)
-    msg = (
-        emoji + emoji + " *" + display + " — " + action + "* " + emoji + emoji + nl + nl +
-
-        "━━━━━━━━━━━━━━━━━━━━" + nl +
-        "📊 *" + display + "*" + nl +
-        "⏰ *Place trade at:*  `" + place_time + " UTC`" + nl +
-        "⌛ *Valid until:*     `" + valid_time + " UTC`  ← deadline!" + nl +
-        "⌛ *Expiry at:*       `" + expiry_time + " UTC`" + nl +
-        "🔴 *Direction:*      *" + direction + " " + de + "*" + nl +
-        "━━━━━━━━━━━━━━━━━━━━" + nl + nl +
-
-        "⏱ *Expiry:* " + expiry["emoji"] + " `" + expiry["label"] + "` _(auto-selected)_" + nl +
-        "💵 *Payout:*         `+" + str(payout) + "%` profit if correct" + nl + nl +
-
-        "📊 *Confidence:* " + conf_bar + " *" + str(confidence) + "%*" + nl +
-        conf_label + nl + nl +
-
-        "⚠️ *PLACE BEFORE " + valid_time + " — signal expires after!*" + nl + nl +
-
-        "📋 *Why " + direction + "?*" + nl +
-        "   • " + reasons_txt + nl + nl +
-
-        (broker_tag + nl + nl if broker_tag else "") +
-        "📱 *Steps:*" + nl +
-        "   1️⃣ Open your broker app NOW" + nl +
-        "   2️⃣ Select *" + display + "*" + nl +
-        "   3️⃣ Set timer: *" + expiry["label"] + "*" + nl +
-        "   4️⃣ Tap *" + direction + "* " + de + nl +
-        "   5️⃣ Enter your stake" + nl + nl +
-
-        "🕐 Signal sent: `" + time_now_str + "`" + nl +
-        "⚠️ _Never stake more than 2-5% of your balance per trade_"
-    )
-    return msg
-
-
-def is_weekend_otc():
-    """True if forex market is closed — use OTC pairs."""
-    now = get_utc_now()
-    # Friday 21:00 UTC to Sunday 23:59 UTC = weekend OTC mode
-    if now.weekday() == 4 and now.hour >= 21:   return True
-    if now.weekday() == 5:                       return True
-    if now.weekday() == 6:                       return True
-    return False
-
-
 def get_active_symbols() -> list:
     """
     Return the correct symbol list for the current market mode.
-    Binary mode uses get_active_binary_symbols() keys.
-    All other modes use MARKET_MODES symbols list.
+    All modes use MARKET_MODES symbols list.
     """
     if active_market == "binary":
-        return list(get_active_binary_symbols().keys())
+        pass  # binary removed
     return MARKET_MODES[active_market]["symbols"]
-
-
-def get_active_binary_symbols():
-    """
-    Return symbol dict based on selected broker mode.
-    - po_regular: live market pairs (weekdays only — auto-switch to OTC on weekend)
-    - po_otc:     synthetic OTC pairs (higher payout, available anytime)
-    - quotex:     Quotex OTC pairs (always available)
-    """
-    weekend = is_weekend_otc()
-
-    if active_broker == "quotex":
-        # Quotex — OTC only, always
-        return {k: v for k, v in QUOTEX_SYMBOLS.items()}
-
-    elif active_broker == "po_otc":
-        # Pocket Option OTC — higher payouts, anytime
-        return {k: v for k, v in POCKET_OPTION_SYMBOLS.items() if v["otc"]}
-
-    elif active_broker == "po_regular":
-        if weekend:
-            # Market closed — auto-switch to PO OTC silently
-            logger.info("⚠️ Weekend detected — auto-switching PO Regular → PO OTC")
-            return {k: v for k, v in POCKET_OPTION_SYMBOLS.items() if v["otc"]}
-        else:
-            # Weekday — regular live pairs
-            return {k: v for k, v in POCKET_OPTION_SYMBOLS.items() if not v["otc"]}
-
-    # Fallback
-    return {k: v for k, v in POCKET_OPTION_SYMBOLS.items() if v["otc"]}
-
-
-def get_broker_tag(symbol_key: str) -> str:
-    """Return broker tag for signal — shows broker, type and payout info."""
-    otc     = symbol_key.endswith("-OTC")
-    weekend = is_weekend_otc()
-    info    = POCKET_OPTION_SYMBOLS.get(symbol_key) or QUOTEX_SYMBOLS.get(symbol_key, {})
-    payout  = info.get("payout", 80)
-
-    if active_broker == "po_regular":
-        mode = "🌙 Auto-switched to OTC (weekend)" if weekend else "📅 Regular Market"
-        return "💰 *Broker:* Pocket Option | " + mode + " | Payout: `" + str(payout) + "%`"
-    elif active_broker == "po_otc":
-        return "💎 *Broker:* Pocket Option OTC | Higher Payout: `" + str(payout) + "%`"
-    elif active_broker == "quotex":
-        qx_info = QUOTEX_SYMBOLS.get(symbol_key, {})
-        qx_pay  = qx_info.get("payout", payout)
-        return "📊 *Broker:* Quotex OTC | Payout: `" + str(qx_pay) + "%`"
-    return "💰 *Broker:* Pocket Option | Payout: `" + str(payout) + "%`"
 
 
 def sort_symbols_by_trend(symbols: dict) -> list:
@@ -2365,283 +1883,6 @@ def sort_symbols_by_trend(symbols: dict) -> list:
         if key not in result:
             result.append(key)
     return result
-
-
-async def scan_binary_signals(context, manual: bool = False):
-    """
-    Binary scan — sends ONLY the single best signal per cycle.
-    Scans TOP_BINARY_PAIRS only to save API calls.
-    Manual: triggered by user. Auto: runs every 5 minutes.
-    """
-    in_blackout, window = is_news_blackout()
-    if in_blackout and not manual:
-        logger.info(f"⏸ Binary scan paused — news blackout: {window}")
-        return
-
-    expiry_key  = active_binary_expiry
-    expiry      = BINARY_EXPIRIES[expiry_key]
-    all_symbols = get_active_binary_symbols()
-    weekend     = is_weekend_otc()
-    broker      = BROKERS[active_broker]
-    nl          = chr(10)
-    send_time   = datetime.now(timezone.utc)
-
-    if not all_symbols:
-        if manual:
-            send_message("⚡ *Binary Scan*" + nl + "No assets available for " + broker["label"])
-        return
-
-    # Use only top 10 pairs (fewer API calls, faster scan)
-    otc_suffix = "-OTC" if weekend else ""
-    scan_keys  = []
-    for pair in TOP_BINARY_PAIRS:
-        key = pair + otc_suffix
-        if key in all_symbols:
-            scan_keys.append(key)
-        elif pair in all_symbols:
-            scan_keys.append(pair)
-    if not scan_keys:
-        scan_keys = list(all_symbols.keys())[:10]
-
-    logger.info(f"⚡ Binary scan: {len(scan_keys)} pairs | broker={active_broker} | otc={weekend}")
-
-    if manual:
-        send_message(
-            "🔍 *Binary Scan Started*" + nl + nl +
-            broker["emoji"] + " Broker: *" + broker["label"] + "*" + nl +
-            ("🌙 OTC Mode" if weekend else "📅 Regular Mode") + nl +
-            "⚡ Expiry: " + expiry["label"] + nl +
-            "⏱ Checking " + str(len(scan_keys)) + " pairs..." + nl +
-            "🕐 " + to_user_time()
-        )
-
-    # Scan all pairs — collect signals with confidence
-    candidates = []
-
-    for symbol in scan_keys:
-        try:
-            info      = all_symbols[symbol]
-            base_key  = symbol.replace("-OTC", "")
-            base_info = BINARY_PAIRS.get(base_key, {})
-            td_sym    = base_info.get("td") or info.get("td")
-            display   = info.get("display", base_key)
-            candle_tf = expiry["candles"]
-
-            logger.info(f"Binary scanning: {display}")
-
-            # Fetch data
-            df = None
-            if base_key in SYMBOLS:
-                df = fetch_data(base_key, interval=candle_tf)
-            elif td_sym:
-                time.sleep(0.5)
-                df = fetch_data_twelvedata(td_sym, interval=candle_tf)
-
-            # Alpha Vantage fallback
-            if (df is None or len(df) < 20) and td_sym:
-                logger.warning(f"TD failed for binary {display} — trying Alpha Vantage")
-                df = fetch_data_alpha_vantage(td_sym, interval=candle_tf)
-
-            if df is None or len(df) < 20:
-                logger.warning(f"Binary: no data for {display}")
-                continue
-
-            result = analyze_binary_signal(df, expiry_key)
-            logger.info(f"Binary {display}: {result['direction']} | {result['confidence']}%")
-
-            if result["direction"] in ["CALL", "PUT"]:
-                candidates.append({
-                    "symbol":   symbol,
-                    "base_key": base_key,
-                    "display":  display,
-                    "result":   result,
-                    "info":     info,
-                    "td_sym":   td_sym,
-                })
-
-        except Exception as e:
-            logger.error(f"Binary scan error {symbol}: {e}")
-            continue
-
-    # Pick BEST signal — highest confidence
-    if not candidates:
-        if manual:
-            send_message(
-                "📊 *Binary Scan — No Signals*" + nl + nl +
-                "No confident setups found in top 10 pairs." + nl +
-                broker["emoji"] + " " + broker["label"] + " | " +
-                ("🌙 OTC" if weekend else "📅 Regular") + nl +
-                "⚡ Expiry: " + expiry["label"] + nl +
-                "🕐 " + to_user_time()
-            )
-        return
-
-    # Sort by confidence — take the best one
-    candidates.sort(key=lambda x: x["result"]["confidence"], reverse=True)
-    best = candidates[0]
-
-    # Only send if confidence >= 65%
-    MIN_BINARY_CONF = 50
-    if best["result"]["confidence"] < MIN_BINARY_CONF:
-        if manual:
-            best_conf = best["result"]["confidence"]
-            send_message(
-                "📊 *Binary Scan — No Signals*" + nl + nl +
-                "Best setup: " + best["display"] + " at " + str(best_conf) + "% conf" + nl +
-                "Minimum required: " + str(MIN_BINARY_CONF) + "%" + nl + nl +
-                "⏳ Waiting for stronger setup..." + nl +
-                "🕐 " + to_user_time()
-            )
-        return
-
-    # Send the single best signal
-    symbol   = best["symbol"]
-    base_key = best["base_key"]
-    display  = best["display"]
-    result   = best["result"]
-    info     = best["info"]
-    td_sym   = best["td_sym"]
-
-    broker_tag = get_broker_tag(symbol)
-    auto_key   = result.get("auto_expiry", expiry_key)
-    exp_used   = BINARY_EXPIRIES[auto_key]
-    msg        = format_binary_signal(result, symbol, display, auto_key, broker_tag)
-
-    send_message(msg)
-
-    # Get entry price
-    if base_key in SYMBOLS:
-        price_data = get_current_price(base_key)
-    elif td_sym:
-        price_data = get_current_price_td(td_sym)
-    else:
-        price_data = None
-    entry_price = price_data["price"] if price_data else 0
-
-    active_binary_trades.append({
-        "symbol":      symbol,
-        "base_key":    base_key,
-        "display":     display,
-        "direction":   result["direction"],
-        "entry":       entry_price,
-        "expiry_s":    exp_used["seconds"],
-        "payout":      info.get("payout", 80),
-        "open_time":   send_time.timestamp(),
-        "valid_until": (send_time + timedelta(minutes=2)).timestamp(),
-        "valid_str":   (send_time + timedelta(minutes=2)).strftime("%H:%M UTC"),
-        "notified":    False,
-        "broker_tag":  broker_tag,
-    })
-    binary_performance["total"]   += 1
-    binary_performance["pending"] += 1
-
-    dir_emoji = "🟢" if result["direction"] == "CALL" else "🔴"
-    logger.info(f"✅ Binary signal sent: {display} {result['direction']} {result['confidence']}%")
-
-
-async def auto_binary_queue_scan(context):
-    """Auto binary queue — runs every 5 minutes, sends best signal if conf >= 65%."""
-    global active_scan
-    # Only run if binary market mode is active or all mode
-    if active_market not in ["binary", "all"]:
-        return
-    logger.info("⚡ Auto binary queue scan running...")
-    await scan_binary_signals(context, manual=False)
-
-
-async def check_binary_results(context):
-    """Check if binary trades have expired and notify result."""
-    now    = datetime.now(timezone.utc).timestamp()
-    closed = []
-
-    for trade in active_binary_trades:
-        elapsed = now - trade["open_time"]
-        if elapsed < trade["expiry_s"]:
-            # Not expired yet — send reminder at halfway point
-            if not trade.get("halfway_notified") and elapsed >= trade["expiry_s"] * 0.5:
-                remaining   = int(trade["expiry_s"] - elapsed)
-                expiry_at   = datetime.fromtimestamp(
-                    trade["open_time"] + trade["expiry_s"], tz=timezone.utc
-                ).strftime("%H:%M:%S")
-                nl = chr(10)
-                send_message(
-                    "⏳ *" + trade["display"] + " " + trade["direction"] + " — Halfway!*" + nl + nl +
-                    "⌛ Time remaining: `" + str(remaining) + " seconds`" + nl +
-                    "🏁 Expires at: `" + expiry_at + " UTC`" + nl + nl +
-                    "👀 Watch your Pocket Option trade..."
-                )
-                trade["halfway_notified"] = True
-            continue
-
-        # Check if entry window expired (user missed it)
-        if not trade.get("window_expired_notified"):
-            valid_until = trade.get("valid_until", trade["open_time"] + 120)
-            if now > valid_until and elapsed < trade["expiry_s"]:
-                trade["window_expired_notified"] = True
-                send_message(
-                    "⏰ *Signal Window Expired!*" + chr(10) + chr(10) +
-                    trade["display"] + " " + trade["direction"] + " signal is now invalid." + chr(10) +
-                    "If you placed the trade — keep holding until `" + trade.get("valid_str","expiry") + "`" + chr(10) +
-                    "If you missed it — _wait for the next signal!_"
-                )
-
-        # Trade expired — check result
-        # Use correct price source: forex binary pairs need Twelve Data
-        base_key   = trade.get("base_key", trade["symbol"].replace("-OTC",""))
-        base_info  = BINARY_PAIRS.get(base_key, {})
-        td_sym     = base_info.get("td")
-
-        if base_key in SYMBOLS:
-            price_data = get_current_price(base_key)
-        elif td_sym:
-            price_data = get_current_price_td(td_sym)
-        else:
-            price_data = None
-
-        if not price_data:
-            continue
-
-        current = price_data["price"]
-        entry   = trade["entry"]
-        nl      = chr(10)
-
-        won = (trade["direction"] == "CALL" and current > entry) or               (trade["direction"] == "PUT"  and current < entry)
-
-        binary_performance["pending"] -= 1
-        if won:
-            binary_performance["wins"] += 1
-            send_message(
-                "✅ *BINARY WIN!* 🎉" + nl + nl +
-                trade["display"] + " " + trade["direction"] + " expired!" + nl +
-                "Entry: `" + str(round(entry, 5)) + "`" + nl +
-                "Close: `" + str(round(current, 5)) + "`" + nl +
-                "Payout: `+" + str(trade["payout"]) + "%` profit 💰" + nl + nl +
-                "Win rate: `" + str(round(binary_performance["wins"] / max(binary_performance["total"] - binary_performance["pending"], 1) * 100, 1)) + "%`"
-            )
-        else:
-            binary_performance["losses"] += 1
-            send_message(
-                "❌ *BINARY LOSS*" + nl + nl +
-                trade["display"] + " " + trade["direction"] + " expired against us." + nl +
-                "Entry: `" + str(round(entry, 5)) + "`" + nl +
-                "Close: `" + str(round(current, 5)) + "`" + nl + nl +
-                "_Stay disciplined — next signal coming!_"
-            )
-
-        closed.append(trade)
-        binary_results.insert(0, {
-            "symbol":    trade["display"],
-            "direction": trade["direction"],
-            "result":    "WIN" if won else "LOSS",
-            "entry":     entry,
-            "close":     current,
-            "time":      datetime.now().strftime("%m/%d %H:%M"),
-        })
-        if len(binary_results) > 50:
-            binary_results.pop()
-
-    for t in closed:
-        active_binary_trades.remove(t)
 
 
 def to_user_time(dt=None) -> str:
@@ -2709,7 +1950,7 @@ def rebuild_symbol_queue():
 async def scan_all_symbols(context, manual: bool = False):
     """
     Manual scan — scans ALL symbols in active market at once.
-    Binary mode delegates to scan_binary_signals.
+
     Auto scan uses check_signals() with rotation instead.
     """
     global symbol_queue, symbol_queue_idx
@@ -2721,7 +1962,7 @@ async def scan_all_symbols(context, manual: bool = False):
 
     # ── Binary mode — use dedicated binary scanner ────────────
     if active_market == "binary":
-        await scan_binary_signals(context, manual=True)
+        pass  # binary removed
         return
 
     forex_open, _  = is_forex_open()
@@ -3278,11 +2519,6 @@ async def scan_crypto_queue(context, manual: bool = False):
     """
     global _last_crypto_queue_signal
 
-    if active_market == "binary":
-        if manual:
-            send_message("⚡ Switch to Forex/Crypto mode to use this scan.")
-        return
-
     in_blackout, window = is_news_blackout()
     if in_blackout and not manual:
         return
@@ -3430,11 +2666,6 @@ async def check_signals(context, show_scanning: bool = False):
         logger.info(f"🔄 Queue complete — restarting {mode['label']} rotation")
         return
 
-    # Binary mode — delegate entirely to binary scan engine
-    if active_market == "binary":
-        await scan_binary_signals(context, manual=False)
-        return
-
     # Pick current symbol in rotation
     symbol = symbol_queue[symbol_queue_idx]
     info   = SYMBOLS.get(symbol)
@@ -3529,7 +2760,7 @@ async def check_signals(context, show_scanning: bool = False):
 
 async def check_trade_outcomes(context):
     """Check open trades for TP/SL hits and trailing stops."""
-    # Skip entirely in binary mode — binary results handled by check_binary_results
+
     if active_market == "binary":
         return
     if open_trades:
@@ -4208,10 +3439,8 @@ async def handle_callback(update: Update, context):
         mode       = MARKET_MODES[active_market]
         tf         = SCAN_MODES[active_scan["tf"]]
         forex_open, _ = is_forex_open()
-        weekend    = is_weekend_otc() if active_market == "binary" else False
         mkt_status = "🟢 Open" if forex_open else "🔴 Closed"
         if active_market == "binary":
-            bin_syms  = get_active_binary_symbols()
             bin_keys  = list(bin_syms.keys())
             total     = len(bin_keys) if bin_keys else 1
             position  = (symbol_queue_idx % total) + 1
@@ -4291,41 +3520,12 @@ async def handle_callback(update: Update, context):
             "💱 *Forex*  — Gold (XAUUSD)" + nl +
             "🪙 *Crypto* — BTC, ETH, SOL, BNB, XRP..." + nl +
             "🌍 *All*    — Forex + All Crypto" + nl +
-            "⚡ *Binary* — Coming soon!",
             make_market_keyboard()
         )
 
     # ── Market mode switch ─────────────────────────────────────
     elif data.startswith("market_"):
         new_market = data[7:]
-
-        if new_market == "binary":
-            active_market = "binary"
-            broker_row_mkt = [
-                InlineKeyboardButton(
-                    BROKERS[bk]["emoji"] + " " + BROKERS[bk]["label"] + (" ✅" if bk == active_broker else ""),
-                    callback_data="binary_broker_" + bk
-                ) for bk in BROKERS
-            ]
-            kb = InlineKeyboardMarkup([
-                broker_row_mkt,
-                [InlineKeyboardButton("⚡ Scan Binary Now", callback_data="binary_scan"),
-                 InlineKeyboardButton("📊 Stats",          callback_data="binary_stats")],
-                [InlineKeyboardButton("📋 History",        callback_data="binary_history"),
-                 InlineKeyboardButton("🏠 Main Menu",      callback_data="menu_main")],
-            ])
-            wins   = binary_performance["wins"]
-            losses = binary_performance["losses"]
-            closed = wins + losses
-            wr     = round((wins / closed) * 100, 1) if closed > 0 else 0
-            await fresh(
-                "⚡ *Binary Options — Pocket Option*" + nl + nl +
-                "Current expiry: " + expiry["emoji"] + " *" + expiry["label"] + "*" + nl + nl +
-                "📊 Win Rate: `" + str(wr) + "%`  W:`" + str(wins) + "` L:`" + str(losses) + "` P:`" + str(binary_performance["pending"]) + "`" + nl + nl +
-                "Select expiry then tap *Scan Binary Now*:",
-                kb
-            )
-            return
 
         old_market    = active_market
         active_market = new_market
@@ -4365,14 +3565,12 @@ async def handle_callback(update: Update, context):
         forex_open, _ = is_forex_open()
         msg           = "💰 *Current Prices*" + nl + nl
 
-        if active_market == "binary":
-            bin_syms = get_active_binary_symbols()
-            broker   = BROKERS[active_broker]
+        if False:  # binary removed
+            pass
             msg     += broker["emoji"] + " *" + broker["label"] + "*" + nl + nl
             shown    = 0
             for sym_key, info in list(bin_syms.items())[:12]:
                 base_key  = sym_key.replace("-OTC", "")
-                base_info = BINARY_PAIRS.get(base_key, {})
                 td_sym    = base_info.get("td")
                 if not td_sym:
                     continue
@@ -4576,191 +3774,6 @@ async def cmd_queuescan(update: Update, context):
     await scan_crypto_queue(context, manual=True)
 
 
-async def cmd_binary(update: Update, context):
-    """Binary options control panel."""
-    expiry = BINARY_EXPIRIES[active_binary_expiry]
-    nl     = chr(10)
-
-    # Broker buttons only — expiry is auto-selected per signal
-    broker_row = [
-        InlineKeyboardButton(
-            BROKERS[bk]["emoji"] + " " + BROKERS[bk]["label"] + (" ✅" if bk == active_broker else ""),
-            callback_data="binary_broker_" + bk
-        ) for bk in BROKERS
-    ]
-
-    weekend  = is_weekend_otc()
-    keyboard = InlineKeyboardMarkup([
-        broker_row,
-        [InlineKeyboardButton("⚡ Scan Binary Now", callback_data="binary_scan"),
-         InlineKeyboardButton("📊 Stats",           callback_data="binary_stats")],
-        [InlineKeyboardButton("📋 History",         callback_data="binary_history"),
-         InlineKeyboardButton("🏠 Main Menu",       callback_data="menu_main")],
-    ])
-
-    total   = binary_performance["total"]
-    wins    = binary_performance["wins"]
-    losses  = binary_performance["losses"]
-    closed  = wins + losses
-    wr      = round((wins / closed) * 100, 1) if closed > 0 else 0
-
-    broker     = BROKERS[active_broker]
-    weekend    = is_weekend_otc()
-    mode_label = "🌙 OTC Mode — Weekend" if weekend else "📅 Regular Mode — Weekday"
-    sym_count  = len(get_active_binary_symbols())
-
-    await update.message.reply_text(
-        "⚡ *Binary Options Panel*" + nl + nl +
-        "Broker: " + broker["emoji"] + " *" + broker["label"] + "*" + nl +
-        "Mode: " + mode_label + nl +
-        "Assets: `" + str(sym_count) + "` available" + nl +
-        "Expiry: " + expiry["emoji"] + " *" + expiry["label"] + "*" + nl + nl +
-        "📊 Win Rate: `" + str(wr) + "%`  W:`" + str(wins) + "` L:`" + str(losses) + "` P:`" + str(binary_performance["pending"]) + "`" + nl + nl +
-        "Switch broker, select expiry, then scan:",
-        parse_mode="Markdown",
-        reply_markup=keyboard
-    )
-
-
-async def handle_binary_callback(update: Update, context):
-    """Handle binary-specific inline buttons."""
-    global active_binary_expiry
-    query = update.callback_query
-    await query.answer()
-    data  = query.data
-    nl    = chr(10)
-
-    async def fresh_binary(text, keyboard=None):
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-        if keyboard:
-            await context.bot.send_message(chat_id=query.message.chat_id, text=text,
-                                           parse_mode="Markdown", reply_markup=keyboard)
-        else:
-            await context.bot.send_message(chat_id=query.message.chat_id, text=text,
-                                           parse_mode="Markdown")
-
-    # Build standard binary keyboard
-    def binary_keyboard():
-        expiry_btns = []
-        for k, v in BINARY_EXPIRIES.items():
-            marker = " ✅" if k == active_binary_expiry else ""
-            expiry_btns.append(InlineKeyboardButton(v["emoji"] + " " + v["label"] + marker, callback_data="binary_expiry_" + k))
-        return InlineKeyboardMarkup([
-            expiry_btns[:2], expiry_btns[2:],
-            [InlineKeyboardButton("⚡ Scan Now", callback_data="binary_scan"),
-             InlineKeyboardButton("📊 Stats",   callback_data="binary_stats")],
-            [InlineKeyboardButton("📋 History", callback_data="binary_history"),
-             InlineKeyboardButton("🏠 Menu",    callback_data="menu_main")],
-        ])
-
-    if data.startswith("binary_broker_"):
-        global active_broker
-        new_broker   = data[14:]
-        old_broker   = active_broker
-        active_broker = new_broker
-        bv           = BROKERS[new_broker]
-        weekend      = is_weekend_otc()
-        mode_label   = "🌙 OTC Mode" if weekend else "📅 Regular Mode"
-        sym_count    = len(get_active_binary_symbols())
-        nl2          = chr(10)
-
-        # Rebuild binary keyboard
-        expiry_btns2 = []
-        for k, v in BINARY_EXPIRIES.items():
-            marker = " ✅" if k == active_binary_expiry else ""
-            expiry_btns2.append(InlineKeyboardButton(v["emoji"] + " " + v["label"] + marker, callback_data="binary_expiry_" + k))
-        broker_btns2 = [
-            InlineKeyboardButton(
-                BROKERS[bk]["emoji"] + " " + BROKERS[bk]["label"] + (" ✅" if bk == active_broker else ""),
-                callback_data="binary_broker_" + bk
-            ) for bk in BROKERS
-        ]
-        kb2 = InlineKeyboardMarkup([
-            broker_btns2,
-            [InlineKeyboardButton("⚡ Scan Now", callback_data="binary_scan"),
-             InlineKeyboardButton("📊 Stats",   callback_data="binary_stats")],
-            [InlineKeyboardButton("📋 History", callback_data="binary_history"),
-             InlineKeyboardButton("🏠 Menu",    callback_data="menu_main")],
-        ])
-        await fresh_binary(
-            bv["emoji"] + " *Switched to " + bv["label"] + "!*" + nl2 + nl2 +
-            "Mode: " + mode_label + nl2 +
-            "Assets available: `" + str(sym_count) + "`" + nl2 + nl2 +
-            ("📅 Showing regular pairs" if not weekend and new_broker != "quotex" else "🌙 Showing OTC pairs") + nl2 + nl2 +
-            "Tap *Scan Binary Now* to start:",
-            kb2
-        )
-
-    elif data.startswith("binary_expiry_"):
-        new_expiry         = data[14:]
-        old_expiry         = active_binary_expiry
-        active_binary_expiry = new_expiry
-        new_e = BINARY_EXPIRIES[new_expiry]
-        old_e = BINARY_EXPIRIES[old_expiry]
-        await fresh_binary(
-            "⏱ *Expiry Switched!*" + nl + nl +
-            "Old: " + old_e["emoji"] + " " + old_e["label"] + nl +
-            "New: " + new_e["emoji"] + " *" + new_e["label"] + "* ✅" + nl + nl +
-            "Tap *Scan Now* to find signals with this expiry:",
-            binary_keyboard()
-        )
-
-    elif data == "binary_scan":
-        await fresh_binary("⚡ *Scanning binary signals...*" + nl + "⏳ Checking all pairs...")
-        await scan_binary_signals(context, manual=True)
-
-    elif data == "binary_stats":
-        total  = binary_performance["total"]
-        wins   = binary_performance["wins"]
-        losses = binary_performance["losses"]
-        pend   = binary_performance["pending"]
-        closed = wins + losses
-        wr     = round((wins / closed) * 100, 1) if closed > 0 else 0
-        filled = int(wr / 10)
-        wr_bar = "█" * filled + "░" * (10 - filled)
-        streak_type = binary_streak["type"] or "None"
-        streak_icon = "🔥" if streak_type == "WIN" else ("💧" if streak_type == "LOSS" else "")
-        asset_lines = ""
-        if binary_asset_stats:
-            sorted_assets = sorted(binary_asset_stats.items(),
-                key=lambda x: x[1]["wins"] / max(x[1]["total"], 1), reverse=True)
-            asset_lines = nl + "━━━━━━━━━━━━━━━━━━━━" + nl + "🏆 *Best Pairs:*" + nl
-            medals = ["🥇", "🥈", "🥉"]
-            for i, (asset, stats) in enumerate(sorted_assets[:8]):
-                asset_wr = round(stats["wins"] / stats["total"] * 100) if stats["total"] > 0 else 0
-                medal    = medals[i] if i < 3 else "  "
-                bf       = int(asset_wr / 20)
-                mini_bar = "█" * bf + "░" * (5 - bf)
-                asset_lines += medal + " *" + asset + ":* `" + mini_bar + "` " + str(asset_wr) + "% (" + str(stats["wins"]) + "W/" + str(stats["losses"]) + "L)" + nl
-        msg = (
-            "📊 *Binary Performance Dashboard*" + nl + nl +
-            "━━━━━━━━━━━━━━━━━━━━" + nl +
-            "✅ Wins: `" + str(wins) + "` | ❌ Losses: `" + str(losses) + "` | ⏳ `" + str(pend) + "`" + nl + nl +
-            "📈 *Win Rate:* `" + wr_bar + "` *" + str(wr) + "%*" + nl + nl +
-            "━━━━━━━━━━━━━━━━━━━━" + nl +
-            "⚡ *Streak:* " + streak_icon + " `" + str(binary_streak["current"]) + "x " + streak_type + "`" + nl +
-            "🏆 Best win streak:   `" + str(binary_streak["best_win"]) + "`" + nl +
-            "💧 Worst loss streak: `" + str(binary_streak["worst_loss"]) + "`" +
-            asset_lines + nl + "🕐 `" + to_user_time() + "`"
-        )
-        await fresh_binary(msg, binary_keyboard())
-
-    elif data == "binary_history":
-        if not binary_results:
-            msg = "📋 *No binary trades yet.*" + nl + "Tap Scan Now!"
-        else:
-            msg = "📋 *Binary History*" + nl + nl
-            for r in binary_results[:8]:
-                emoji = "✅" if r["result"] == "WIN" else "❌"
-                de    = "⬆️" if r["direction"] == "CALL" else "⬇️"
-                msg  += emoji + " " + de + " " + r["symbol"] + " " + r["direction"] + " — " + r["result"] + nl
-                msg  += "   Entry:`" + str(round(r["entry"],4)) + "` Close:`" + str(round(r["close"],4)) + "` " + r["time"] + nl + nl
-        await fresh_binary(msg, binary_keyboard())
-
-
 async def cmd_help(update: Update, context):
     await update.message.reply_text(
         "📖 *How to Use @FaroSignal_bot*\n\n"
@@ -4793,22 +3806,16 @@ async def cmd_help(update: Update, context):
 
 async def check_signal_expiry(context):
     """
-    Every 60s — check if signals were entered within 15 minutes.
-    If not entered in time → mark as MISSED and remove from open_trades.
-    Also checks if price moved into entry zone (entry_triggered).
+    Every 60s — before expiring a signal, re-analyze the asset.
+    Sends: STILL VALID / TREND CHANGED / WEAKENING / EXPIRED
     """
-    # Skip in binary mode — binary trades managed separately
-    if active_market == "binary":
-        return
-
     global performance
     now    = datetime.now(timezone.utc).timestamp()
     closed = []
     nl     = chr(10)
 
     for trade in open_trades:
-        # Skip trades that already have entry confirmed
-        if trade.get("entry_triggered"):
+        if trade.get("entry_triggered") or trade.get("expired"):
             continue
 
         current_data = get_current_price(trade["symbol"])
@@ -4818,10 +3825,11 @@ async def check_signal_expiry(context):
         current = current_data["price"]
         entry   = trade["price"]
         signal  = trade["signal"]
-        sl      = trade["sl"]
         sl_usd  = trade["sl_usd"]
+        display = trade["display"]
+        symbol  = trade["symbol"]
 
-        # Check if price moved toward trade (within 0.3 x SL = entry triggered)
+        # Check if price moved into entry zone
         if signal == "BUY":
             price_moved = current >= entry - (sl_usd * 0.3)
         else:
@@ -4829,32 +3837,97 @@ async def check_signal_expiry(context):
 
         if price_moved:
             trade["entry_triggered"] = True
-            logger.info(f"✅ {trade['display']} entry triggered — price moved into zone")
+            logger.info(f"✅ {display} entry triggered")
             continue
 
-        # Check 15-minute expiry
-        if now >= trade["entry_expiry_time"] and not trade.get("entry_missed_noted"):
-            trade["entry_missed_noted"] = True
+        # Not entered yet — check expiry time
+        if now < trade["entry_expiry_time"]:
+            continue
 
-            # Update outcome to MISSED in history
-            for h in signal_history:
-                if h["id"] == trade["id"]:
-                    h["outcome"] = "MISSED"
-                    break
+        if trade.get("entry_missed_noted"):
+            continue
 
-            performance["pending"] -= 1
-            performance["total"]   -= 1   # Don't count missed in stats
+        trade["entry_missed_noted"] = True
 
+        # ── RE-ANALYZE before expiring ────────────────────────
+        try:
+            mode_cfg = SCAN_MODES[active_scan["tf"]]
+            df = fetch_data(symbol, interval=mode_cfg["interval"])
+            if df is not None and len(df) >= 50:
+                df  = calculate_indicators(df)
+                mtf = multi_timeframe_analysis(symbol)
+                sig = generate_signal(df, mtf)
+
+                # Case 1: Same direction still valid — KEEP IT
+                if sig["signal"] == signal:
+                    grade = sig.get("grade", "")
+                    # Extend expiry by 15 more minutes
+                    trade["entry_expiry_time"] = now + 900
+                    trade["entry_missed_noted"] = False  # reset so we check again
+                    send_message(
+                        "🔄 *SIGNAL STILL VALID — Extended!*" + nl + nl +
+                        "✅ " + display + " " + signal + " — trend confirmed!" + nl +
+                        grade + nl + nl +
+                        "Entry: `" + str(round(entry, 5)) + "`" + nl +
+                        "Current: `" + str(round(current, 5)) + "`" + nl +
+                        "SL: `" + str(round(trade["sl"], 5)) + "` | TP: `" + str(round(trade["tp"], 5)) + "`" + nl + nl +
+                        "⏱ Extended 15 more minutes — signal is alive!" + nl +
+                        "🕐 " + to_user_time()
+                    )
+                    continue
+
+                # Case 2: Opposite direction — TREND REVERSED
+                elif sig["signal"] in ["BUY", "SELL"] and sig["signal"] != signal:
+                    opposite = sig["signal"]
+                    send_message(
+                        "🔀 *TREND REVERSED — EXIT SIGNAL!*" + nl + nl +
+                        "⚠️ " + display + " " + signal + " signal is now *invalid.*" + nl + nl +
+                        "📊 New analysis shows: *" + opposite + "* setup forming!" + nl +
+                        "Grade: " + sig.get("grade", "") + nl + nl +
+                        "Entry was: `" + str(round(entry, 5)) + "`" + nl +
+                        "Current:   `" + str(round(current, 5)) + "`" + nl + nl +
+                        "❌ *Close or avoid this trade.*" + nl +
+                        "🔄 Watch for a new " + opposite + " signal soon."
+                    )
+
+                # Case 3: HOLD — trend weakening or ranging
+                else:
+                    regime = sig.get("regime", {})
+                    adx    = regime.get("adx", 0)
+                    send_message(
+                        "⚠️ *SIGNAL WEAKENING — Be Cautious*" + nl + nl +
+                        display + " " + signal + " signal has lost momentum." + nl + nl +
+                        "📊 ADX: `" + str(round(adx, 1)) + "` — market may be ranging" + nl +
+                        "Entry: `" + str(round(entry, 5)) + "`" + nl +
+                        "Current: `" + str(round(current, 5)) + "`" + nl + nl +
+                        "💡 _If not entered — skip this trade._" + nl +
+                        "💡 _If in trade — consider moving SL to breakeven._"
+                    )
+
+            else:
+                # No data — simple expiry
+                send_message(
+                    "⏰ *Signal Expired — No Data*" + nl +
+                    display + " " + signal + " | Entry: `" + str(round(entry, 5)) + "`" + nl +
+                    "_Could not re-analyze — skip this trade._"
+                )
+
+        except Exception as e:
+            logger.error(f"Re-analysis error {display}: {e}")
             send_message(
-                "⏰ *SIGNAL EXPIRED — NOT ENTERED*" + nl + nl +
-                "❌ " + trade["display"] + " " + signal + " signal was not triggered." + nl + nl +
-                "Entry price: `" + str(round(entry, 2)) + "`" + nl +
-                "Current:     `" + str(round(current, 2)) + "`" + nl +
-                "Expired:     15 minutes passed" + nl + nl +
-                "_This trade has been removed from tracking._" + nl +
-                "_Wait for the next signal!_ 🔄"
+                "⏰ *" + display + " " + signal + " — Expired*" + nl +
+                "Entry: `" + str(round(entry, 5)) + "` | Current: `" + str(round(current, 5)) + "`"
             )
-            closed.append(trade)
+
+        # Mark as expired and remove
+        trade["expired"] = True
+        for h in signal_history:
+            if h["id"] == trade["id"]:
+                h["outcome"] = "MISSED"
+                break
+        performance["pending"] -= 1
+        performance["total"]   -= 1
+        closed.append(trade)
 
     for t in closed:
         if t in open_trades:
@@ -4870,12 +3943,10 @@ async def post_init(application):
     logger.info(f"🔄 Queue initialized: {[SYMBOLS[s]['display'] for s in symbol_queue]}")
 
     jq.run_repeating(check_signals,           interval=active_scan["seconds"], first=15,  name="signal_scan")
-    jq.run_repeating(check_binary_results,    interval=30,  first=20)
     jq.run_repeating(check_trade_outcomes,    interval=60,  first=30)
     jq.run_repeating(check_user_trades,       interval=60,  first=15)
     jq.run_repeating(send_daily_summary,      interval=3600, first=60)  # Check hourly
     jq.run_repeating(check_signal_expiry,     interval=60,  first=45)
-    jq.run_repeating(auto_binary_queue_scan,  interval=300, first=60,  name="binary_auto_scan")   # Every 5 min
     jq.run_repeating(auto_crypto_queue_scan,  interval=900, first=120, name="crypto_queue_scan")  # Every 15 min
 
     logger.info("✅ All jobs scheduled via post_init")
@@ -4914,7 +3985,6 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_timezone_callback, pattern="^tz_"))
     app.add_handler(CallbackQueryHandler(handle_binary_callback,   pattern="^binary_"))
     app.add_handler(CallbackQueryHandler(handle_callback,          pattern="^(?!binary_|tz_|trade_)"))
-    app.add_handler(CommandHandler("binary",     cmd_binary))
     app.add_handler(CommandHandler("queuescan",  cmd_queuescan))
     app.add_handler(CommandHandler("timezone", cmd_timezone))
     app.add_handler(CommandHandler("mytrades", cmd_mytrades))
